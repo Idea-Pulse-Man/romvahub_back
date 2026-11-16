@@ -10,7 +10,7 @@ import { convertDocxToPdf, processMakerJson, renderStructuredWithMaker } from '.
 import { AiResumeSchema } from '../resume/resume.schemas.js';
 import { CoverLetterPayloadSchema, type CoverLetterPayload } from '../cover-letter/cover-letter.schemas.js';
 import { renderCoverLetter } from '../cover-letter/cover-letter.service.js';
-import { promptsForMake } from '../profiles/profile-prompts.service.js';
+import { settingsForMake } from '../profiles/profile-prompts.service.js';
 import { logger } from '../logger.js';
 import { askChatGpt, parseJsonAnswer } from './chatgpt-web.js';
 
@@ -138,8 +138,10 @@ async function make(actor: Actor, bidId: string): Promise<MadeResume> {
   const profile = bid.candidate?.profileId
     ? await profileService.getProfileById(bid.candidate.profileId)
     : await profileService.getProfile(ownerId);
-  // The Profile's own prompts (Profiles → Prompts), else the defaults.
-  const prompts = await promptsForMake({ profileId: bid.candidate?.profileId, ownerUserId: ownerId });
+  // The Profile's own Resume prompt and template (Profiles → Prompts &
+  // Template) are required: no ChatGPT call for a Profile missing either. The
+  // cover letter prompt falls back to the simple one.
+  const prompts = await settingsForMake({ profileId: bid.candidate?.profileId, ownerUserId: ownerId });
 
   const input = JSON.stringify(
     { target_company: bid.company, target_role: bid.role, job_description: jobDescription },
@@ -161,7 +163,7 @@ async function make(actor: Actor, bidId: string): Promise<MadeResume> {
 
   // The app's own prompt answers in its structured shape; a Resume Maker
   // prompt (P.txt) in Maker JSON. Both go into the same Word template.
-  const templateId = profile.resumeTemplateId;
+  const templateId = prompts.templateId;
   const name = [profile.firstName, profile.lastName].filter(Boolean).join(' ').trim();
   const structured = AiResumeSchema.safeParse(json);
   let docx: Buffer;
@@ -221,7 +223,11 @@ async function make(actor: Actor, bidId: string): Promise<MadeResume> {
     const ownerUserId = bid.candidate?.userId ?? actor.id;
     const [letterPdf, letterDocx] = await Promise.all(
       (['pdf', 'docx'] as const).map((format) =>
-        renderCoverLetter(ownerUserId, { document: letter, format }, { date: bid.bidDate }),
+        renderCoverLetter(
+          ownerUserId,
+          { document: letter, format },
+          { date: bid.bidDate, profileId: bid.candidate?.profileId },
+        ),
       ),
     );
     updated = await bidsService.setBidCoverLetter(actor, bid.id, letter);

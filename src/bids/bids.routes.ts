@@ -266,8 +266,9 @@ bidsRouter.get(
       bid.candidate?.userId ?? actor.id,
       { document: parsed.data, format },
       // The bid's date, so a letter downloaded months later still carries the
-      // day the application was made rather than the day it was printed.
-      { date: bid.bidDate },
+      // day the application was made rather than the day it was printed — and
+      // its Profile's name and contact line.
+      { date: bid.bidDate, profileId: bid.candidate?.profileId },
     );
 
     res.setHeader('Content-Type', contentType);

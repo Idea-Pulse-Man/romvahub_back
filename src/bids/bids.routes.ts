@@ -6,6 +6,7 @@ import { contentDisposition } from '../http/content-disposition.js';
 import { validate, type ValidatedRequest } from '../http/validate.js';
 import * as bidsService from './bids.service.js';
 import { stepsRouter } from './steps.routes.js';
+import { autoMakeNewApplication } from '../local/chatgpt-resume.js';
 import * as resumeService from '../resume/resume.service.js';
 import * as coverLetterService from '../cover-letter/cover-letter.service.js';
 import { BadRequestError, NotFoundError } from '../http/errors.js';
@@ -81,7 +82,12 @@ bidsRouter.get('/version', validate({ query: BidsVersionQuerySchema }), async (r
 
 bidsRouter.post('/', validate({ body: CreateBidSchema }), async (req, res) => {
   const body = (req as ValidatedRequest<CreateBidInput>).valid.body;
-  res.status(201).json(await bidsService.createBid(currentActor(req), body));
+  const actor = currentActor(req);
+  const bid = await bidsService.createBid(actor, body);
+  // A new application gets its Resume and cover letter made in the
+  // background (CHATGPT_AUTO_MAKE=true) — from the form or the scraper alike.
+  autoMakeNewApplication(actor, bid);
+  res.status(201).json(bid);
 });
 
 /**
@@ -204,6 +210,23 @@ bidsRouter.get(
  * one is an optional step, so most applications have none. `hasCoverLetter` on
  * the bid says which.
  */
+/**
+ * The stored cover letter as JSON — what the Applications table's Copy button
+ * turns into plain text. The download route below has the files.
+ */
+bidsRouter.get('/:id/cover-letter/document', validate({ params: BidIdParamsSchema }), async (req, res) => {
+  const { id } = (req as ValidatedRequest<unknown, BidIdParams>).valid.params;
+  const stored = await bidsService.getBidCoverLetter(currentActor(req), id);
+  if (stored === null) {
+    throw new NotFoundError('No cover letter has been written for this application.');
+  }
+  const parsed = CoverLetterPayloadSchema.safeParse(stored);
+  if (!parsed.success) {
+    throw new NotFoundError("This application's cover letter was saved in an older format. Make it again.");
+  }
+  res.json({ document: parsed.data });
+});
+
 bidsRouter.get(
   '/:id/cover-letter',
   validate({ params: BidIdParamsSchema, query: BidResumeQuerySchema }),

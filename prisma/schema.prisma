@@ -449,6 +449,13 @@ model Profile {
   /// DOCX Maker template used by default when rendering this Profile's Resumes.
   resumeTemplateId String @default("default.docx")
 
+  /// This Profile's own ChatGPT prompts for "Make" in the Applications table —
+  /// the Resume's and the cover letter's. Null means "use the default" (the
+  /// prompt files in the environment, then AI Settings / the built-in prompt).
+  /// Editable by an admin and by every User the Profile is shared with.
+  resumePrompt      String?
+  coverLetterPrompt String?
+
   /// Legacy free-text place line kept for Resume templates; prefer structured address fields.
   location String @default("")
 

@@ -675,6 +675,20 @@ export async function getBidCoverLetter(actor: Actor, bidId: string): Promise<un
 }
 
 /**
+ * Stores a cover letter on an application without touching anything else on
+ * it — what "Make" in the Applications table does after ChatGPT writes one.
+ * Ownership is the same as any other write to the bid.
+ */
+export async function setBidCoverLetter(actor: Actor, bidId: string, document: object): Promise<Bid> {
+  const existing = await findRowOrThrow(actor, bidId);
+  await prisma.bid.update({
+    where: { id: existing.id },
+    data: { coverLetterDocument: document as PrismaTypes.InputJsonValue },
+  });
+  return getBid(actor, existing.id);
+}
+
+/**
  * The conversation stored against a bid.
  *
  * Loaded on its own for the same reason the Resume is: the list endpoint

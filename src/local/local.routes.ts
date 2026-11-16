@@ -4,7 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { Router, type Request } from 'express';
 import { z } from 'zod';
+import { currentActor } from '../auth/actor.js';
 import { requireAuth } from '../auth/require-auth.js';
+import { makeResumeWithChatGpt, makingNow, resumeSaveDir } from './chatgpt-resume.js';
 import { validate, type ValidatedRequest } from '../http/validate.js';
 import {
   BadRequestError,
@@ -194,4 +196,35 @@ localRouter.post('/open-folder', validate({ body: OpenFolderSchema }), async (re
   child.unref();
 
   res.json({ opened: target });
+});
+
+/** Which applications are being made right now (manually or automatically), for "Making…" in the table. */
+localRouter.get('/chatgpt/making', (_req, res) => {
+  // `savesFiles`: the API writes the files into RESUME_SAVE_DIR itself, so the
+  // page has no folder to ask for.
+  res.json({ bidIds: makingNow(), savesFiles: resumeSaveDir() !== null });
+});
+
+const MakeResumeSchema = z.object({ bidId: z.string().uuid() });
+type MakeResumeInput = z.infer<typeof MakeResumeSchema>;
+
+/**
+ * "Make" in the Applications table: ChatGPT (chatgpt.com in a Chrome window on
+ * this computer, signed in with the person's own account — no API key) writes
+ * the Resume JSON, the profile's template lays it out, and the PDF and Word
+ * files are stored on the application. The files come back too, for the page
+ * to write into the Resume save folder. Local only, for the reason
+ * `/open-folder` is: the browser window it drives is on this machine.
+ */
+localRouter.post('/chatgpt/resume', validate({ body: MakeResumeSchema }), async (req, res) => {
+  if (!fromThisComputer(req)) {
+    throw new ForbiddenError(
+      'Resumes are made with ChatGPT on the computer romva.space runs on. Open the app at http://localhost:5173.',
+    );
+  }
+  const { bidId } = (req as ValidatedRequest<MakeResumeInput>).valid.body;
+  // A ChatGPT answer takes minutes; keep the socket from being reaped meanwhile.
+  req.setTimeout(0);
+  res.setTimeout(0);
+  res.json(await makeResumeWithChatGpt(currentActor(req), bidId));
 });

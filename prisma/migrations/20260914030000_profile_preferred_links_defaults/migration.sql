@@ -1,0 +1,20 @@
+-- Preferred name, extra links, and job-application defaults on profiles.
+ALTER TABLE "profiles" ADD COLUMN "hasPreferredName" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "profiles" ADD COLUMN "preferredFirstName" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "profiles" ADD COLUMN "preferredLastName" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "profiles" ADD COLUMN "githubUrl" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "profiles" ADD COLUMN "portfolioUrl" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "profiles" ADD COLUMN "otherUrl" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "profiles" ADD COLUMN "authorizedCountries" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];
+ALTER TABLE "profiles" ADD COLUMN "gender" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "profiles" ADD COLUMN "ethnicity" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "profiles" ADD COLUMN "disabilityStatus" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "profiles" ADD COLUMN "veteranStatus" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "profiles" ADD COLUMN "lgbtqIdentity" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "profiles" ADD COLUMN "birthYear" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "profiles" ADD COLUMN "securityClearance" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "profiles" ADD COLUMN "drugTestWillingness" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "profiles" ADD COLUMN "noticePeriod" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "profiles" ADD COLUMN "openToRelocation" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "profiles" ADD COLUMN "inPersonAvailability" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "profiles" ADD COLUMN "requireAccommodations" TEXT NOT NULL DEFAULT '';

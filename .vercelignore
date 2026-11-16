@@ -1,0 +1,10 @@
+# Never uploaded to Vercel: local secrets, dependencies and build output are
+# rebuilt there from package.json and yarn.lock.
+.env
+.env.*
+node_modules
+dist
+tests
+coverage
+*.log
+.tmp-*

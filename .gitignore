@@ -1,0 +1,36 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Secrets. Only .env.example is committed.
+.env
+.env.*
+!.env.example
+
+# Prisma writes the generated client here; it is rebuilt by `yarn prisma:generate`.
+src/generated/
+
+# Yarn (node-modules linker — the cache and unplugged dirs are not committed)
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+.pnp.*
+
+*.log
+*.pid
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+.vercel
+.env*
+
+# Local one-off scripts
+.tmp-*
+!.env.example

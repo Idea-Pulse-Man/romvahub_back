@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <title>RemoteOps API</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #16181d;
+        --muted: #5c626e;
+        --line: #e3e5ea;
+        --accent: #2f5bd7;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0e1014;
+          --fg: #e8eaee;
+          --muted: #9aa1ae;
+          --line: #262a33;
+          --accent: #7d9bf0;
+        }
+      }
+      body {
+        margin: 0;
+        padding: 4rem 1.5rem;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      main { max-width: 34rem; margin: 0 auto; }
+      h1 { font-size: 1.5rem; margin: 0 0 0.5rem; letter-spacing: -0.01em; }
+      p { color: var(--muted); margin: 0 0 2rem; }
+      ul { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+      li { border-bottom: 1px solid var(--line); }
+      a { display: flex; gap: 1rem; padding: 0.85rem 0; color: inherit; text-decoration: none; }
+      a:hover code { color: var(--accent); }
+      code { color: var(--fg); font: 0.9rem/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      span { color: var(--muted); margin-left: auto; text-align: right; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>RemoteOps API</h1>
+      <p>The server-side API for RemoteOps. Everything below this page is JSON.</p>
+      <ul>
+        <li><a href="/docs"><code>/docs</code> <span>Swagger UI</span></a></li>
+        <li><a href="/openapi.json"><code>/openapi.json</code> <span>OpenAPI 3.1 spec</span></a></li>
+        <li><a href="/health"><code>/health</code> <span>Liveness and database check</span></a></li>
+        <li><a href="/api/auth/me"><code>/api/*</code> <span>The API itself; cookie auth</span></a></li>
+      </ul>
+    </main>
+  </body>
+</html>

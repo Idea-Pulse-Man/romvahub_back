@@ -1,0 +1,19 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "mkdir -p /tmp/corepack && corepack enable --install-directory /tmp/corepack && export PATH=/tmp/corepack:$PATH COREPACK_ENABLE_DOWNLOAD_PROMPT=0 && yarn --version && yarn install --immutable",
+  "buildCommand": "yarn build && if [ \"$VERCEL_ENV\" = \"production\" ]; then yarn prisma:deploy; fi",
+  "framework": null,
+  "outputDirectory": "public",
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 120,
+      "includeFiles": "{node_modules/swagger-ui-dist/**,assets/resume-templates/**,node_modules/docx-preview/**,node_modules/jszip/dist/**,node_modules/@fontsource/roboto/**,node_modules/@fontsource/arimo/**}"
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/api"
+    }
+  ]
+}

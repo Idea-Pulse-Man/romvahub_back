@@ -1,0 +1,623 @@
+// RemoteOps — backend data model.
+//
+// This mirrors the frontend's `src/lib/types.ts`. Where the frontend uses a
+// string union, this uses a Postgres enum whose *stored* values are the exact
+// strings the frontend sends and expects — see the `@map` annotations. The
+// generated TypeScript names are the SCREAMING_CASE identifiers (Prisma cannot
+// have spaces or parentheses in an enum member name); `src/domain/status.ts`
+// converts between the two in one place.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// Prisma 7 takes the connection URL from `prisma.config.ts` (for the CLI) and
+// from the driver adapter passed to `new PrismaClient()` (at runtime), not from
+// this block.
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------- enums
+
+/// The eleven funnel positions. Transitions are deliberately unconstrained —
+/// the funnel is the intended narrative, not a state machine.
+enum BidStatus {
+  DRAFT                   @map("Draft")
+  APPLIED                 @map("Applied")
+  SCREENING_ROUND_1       @map("Screening (Round 1)")
+  INTERVIEW_ROUND_2       @map("Interview (Round 2)")
+  INTERVIEW_ROUND_3       @map("Interview (Round 3)")
+  FINAL_INTERVIEW         @map("Final Interview")
+  OFFER                   @map("Offer")
+  BACKGROUND_CHECK_PASSED @map("Background Check Passed")
+  STARTED                 @map("Started")
+  COMPLETED               @map("Completed")
+  FAILED                  @map("Failed")
+
+  @@map("bid_status")
+}
+
+enum RateType {
+  HOURLY   @map("hourly")
+  ANNUALLY @map("annually")
+
+  @@map("rate_type")
+}
+
+enum Theme {
+  LIGHT @map("light")
+  DARK  @map("dark")
+
+  @@map("theme")
+}
+
+/// Who may see which screens. The data itself is per-user either way — this
+/// decides which of the app's pages an account is offered, not whose rows it
+/// can reach. Promotion is a deliberate act: there is no self-service route to
+/// ADMIN, only `yarn db:seed` or a hand-written UPDATE (README section 6.6).
+enum UserRole {
+  USER  @map("user")
+  ADMIN @map("admin")
+
+  @@map("user_role")
+}
+
+/// Whether a platform login may sign in.
+///
+/// `active` — normal access.
+/// `suspended` — blocked by an administrator; credentials still exist, login fails.
+enum UserAccountStatus {
+  ACTIVE    @map("active")
+  SUSPENDED @map("suspended")
+
+  @@map("user_account_status")
+}
+
+// ---------------------------------------------------------------- identity
+
+/// A platform login account — Admin or User.
+///
+/// Users authenticate to use RemoteOps. They are **not** the same thing as
+/// Profiles (candidate identities used when applying to US remote jobs).
+/// Accounts are created by an administrator only; there is no public sign-up.
+/// The deployment has exactly one Admin.
+model User {
+  id           String            @id @default(uuid()) @db.Uuid
+  email        String            @unique
+  passwordHash String
+  role         UserRole          @default(USER)
+  status       UserAccountStatus @default(ACTIVE)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  /// Legacy 1:1 Resume stub for `/api/profile`. Application Profiles are
+  /// first-class rows (often with `userId` null) shared via `ProfileShare`.
+  profile       Profile?
+  profileShares ProfileShare[]
+  settings      Settings?
+  aiPrompts     UserAiPrompts?
+  bids          Bid[]
+  refreshTokens RefreshToken[]
+  loginHistory  LoginHistory[]
+  notificationsReceived Notification[] @relation("NotificationRecipient")
+  notificationsSent     Notification[] @relation("NotificationSender")
+
+  @@map("users")
+}
+
+/// Refresh tokens are stored hashed and rotated on every use. A token that is
+/// presented after it has already been rotated is treated as theft: the whole
+/// family for that user is revoked. See `src/auth/auth.service.ts`.
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+/// One successful password sign-in. Written on `POST /api/auth/login` only —
+/// token refresh is not a new login. Used by admin user management. Location
+/// fields come from a best-effort GeoIP lookup; client fields from the UA.
+model LoginHistory {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  ip             String?
+  userAgent      String?
+  acceptLanguage String?
+
+  country     String?
+  countryCode String?
+  region      String?
+  city        String?
+  latitude    Float?
+  longitude   Float?
+  timezone    String?
+  isp         String?
+  org         String?
+  /// Prebuilt place line for list UIs ("Austin, Texas, United States").
+  locationLabel String?
+
+  browser    String?
+  os         String?
+  /// desktop | mobile | tablet | bot | unknown
+  deviceType String?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("login_history")
+}
+
+/// An in-app message delivered to one account. Broadcasts create one row per
+/// recipient so each person owns an independent read state.
+model Notification {
+  id          String    @id @default(uuid()) @db.Uuid
+  recipientId String    @db.Uuid
+  recipient   User      @relation("NotificationRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  senderId    String?   @db.Uuid
+  sender      User?     @relation("NotificationSender", fields: [senderId], references: [id], onDelete: SetNull)
+  title       String
+  message     String
+  link        String?
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([recipientId, createdAt(sort: Desc)])
+  @@index([recipientId, readAt])
+  @@map("notifications")
+}
+
+// ---------------------------------------------------------------- domain
+
+/// A bid is one job application — the only first-class entity in the system.
+model Bid {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Application Profile this bid belongs to. Null on rows filed before
+  /// Profiles were first-class; the admin logo switcher scopes lists by this.
+  profileId String?  @db.Uuid
+  profile   Profile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
+
+  company        String
+  role           String
+  jobUrl         String?
+  location       String
+  jobDescription String?
+
+  // Legacy: no longer captured by the UI, but seed and pre-existing bids carry
+  // it and every screen still reads it for display.
+  rateType   RateType?
+  rateAmount Decimal?  @db.Decimal(12, 2)
+
+  bidDate       DateTime  @db.Date
+  status        BidStatus
+  followUpDate  DateTime? @db.Date
+  resumeVersion String?
+  notes         String?
+
+  /**
+   * The object key of the screenshot proving this application was submitted —
+   * the job site's "thank you for applying" page — in the same bucket as the
+   * candidate photos, and a key rather than a URL for the same reason: a
+   * signed link expires. Uploaded by the candidate when the application is
+   * filed, so an admin can check that a job was really applied to. Null for
+   * every application filed before this existed.
+   */
+  proofKey String?
+
+  /**
+   * What is *in* the proof screenshot: a hash of its pixels and a small colour
+   * grid — see `src/proof/fingerprint.ts` — so an upload can be compared with
+   * every other application's screenshot without fetching any of them, to
+   * catch the same confirmation page filed twice. Set with the screenshot,
+   * cleared with it; null for every screenshot uploaded before this existed,
+   * and stale for those fingerprinted by an earlier version of the method,
+   * until `yarn proofs:fingerprint` has been run.
+   */
+  proofFingerprint Json?
+
+  /**
+   * The Resume the AI wrote for this application, as the JSON the template
+   * renders — not a file. Storing the content rather than a PDF is what lets
+   * the same application be downloaded as either format later, and keeps the
+   * row small enough to live on the bid rather than in a blob store.
+   *
+   * Null for every bid created before Resume generation existed, and for any
+   * created without one.
+   */
+  resumeDocument Json?
+
+  /**
+   * The cover letter written for this application, as the JSON its template
+   * renders — the same trade `resumeDocument` makes, and for the same reason:
+   * storing the content rather than a file is what lets one application be
+   * downloaded as either PDF or Word later, from the letter that was actually
+   * sent with it.
+   *
+   * Null for every application saved before cover letters existed, and for any
+   * saved without one — the letter is an optional step, not a required one.
+   */
+  coverLetterDocument Json?
+
+  /**
+   * The conversation held while filling in this application's form, as
+   * `[{ "role": "user" | "assistant", "content": "..." }]`.
+   *
+   * Not the Resume, and not a duplicate of it — this is the talk about the
+   * free-text boxes beside it ("Why this company?", "Years with Kubernetes?",
+   * "Notice period?"). The whole transcript rather than the answers alone: an
+   * answer read a week later without the question above it is not much use, and
+   * the follow-ups are usually where the good version came from.
+   *
+   * Null for every application whose form asked nothing, which is most of them.
+   */
+  applicationChat Json?
+
+  /// Set when the application is archived from the Pipeline board: kept, but
+  /// off the active board. Null for every active application.
+  archivedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  interviews InterviewRound[]
+  /// The interview process as the candidate tracks it — any number of typed
+  /// steps, scheduled or not, shown on the Pipeline card and edited in its drawer.
+  steps      InterviewStep[]
+  commitment Commitment?
+  /// The Resume files (PDF, Word) synced up from the folder the desktop Resume
+  /// Builder wrote them into. See `BidResumeFile`.
+  resumeFiles BidResumeFile[]
+
+  @@index([userId, status])
+  @@index([userId, bidDate])
+  @@index([profileId, status])
+  @@index([profileId, bidDate])
+  @@map("bids")
+}
+
+/// One Resume file for one application — the PDF or the Word document the
+/// desktop Resume Builder wrote into the application's folder, uploaded by the
+/// Applications page's folder sync. One row per format, replaced in place when
+/// the file on disk changes; `sha256` is what the sync compares against so an
+/// unchanged file is never sent again. Kept in the database, as the interview
+/// step files are, so every server shares it and no bucket is needed.
+model BidResumeFile {
+  id    String @id @default(uuid()) @db.Uuid
+  bidId String @db.Uuid
+  bid   Bid    @relation(fields: [bidId], references: [id], onDelete: Cascade)
+
+  /// `pdf` or `docx`.
+  format      String
+  /// The file's own name on disk, e.g. `William_Kolega_Acme_resume.pdf`.
+  name        String
+  contentType String
+  size        Int
+  sha256      String
+  data        Bytes
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([bidId, format])
+  @@map("bid_resume_files")
+}
+
+/// An uploaded Resume Maker template (.docx), stored in the database so every
+/// server shares it and it survives deploys. Built-in templates are files under
+/// `assets/resume-templates/`. See `src/resume/maker/templates.ts`.
+model ResumeTemplate {
+  /// The file name, e.g. "William_Kolega_Template.docx" — what profiles refer to.
+  id        String   @id
+  data      Bytes
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("resume_templates")
+}
+
+/// One step of an application's interview process: "Recruiter Screen",
+/// "Technical", "Onsite"… Unlike `InterviewRound` these are free-form — as many
+/// as the process has, in the order they happen, and allowed to be unscheduled
+/// ("TBD") until a date is known.
+model InterviewStep {
+  id    String @id @default(uuid()) @db.Uuid
+  bidId String @db.Uuid
+  bid   Bid    @relation(fields: [bidId], references: [id], onDelete: Cascade)
+
+  /// One of the step types the drawer offers (see `INTERVIEW_STEP_TYPES`).
+  type        String
+  companyName String @default("")
+  /// Wall-clock time in `timezone`, stored naive like `InterviewRound.dateTime`.
+  scheduledAt     DateTime? @db.Timestamp(0)
+  /// IANA zone the time is in, e.g. "America/New_York".
+  timezone        String?
+  durationMinutes Int?
+  details         String    @default("")
+  /// Order on the card: steps are shown left to right by this, then by creation.
+  position        Int       @default(0)
+
+  files InterviewStepFile[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([bidId, position])
+  @@map("interview_steps")
+}
+
+/// A file attached to an interview step — a take-home brief, an agenda, notes.
+/// Kept in the database (bytes and all) rather than a bucket: they are few and
+/// small, capped by the upload route.
+model InterviewStepFile {
+  id          String        @id @default(uuid()) @db.Uuid
+  stepId      String        @db.Uuid
+  step        InterviewStep @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  name        String
+  contentType String
+  size        Int
+  data        Bytes
+
+  createdAt DateTime @default(now())
+
+  @@index([stepId])
+  @@map("interview_step_files")
+}
+
+/// One scheduled interview per stage reached. The compound unique key is what
+/// enforces business rule 2 — re-entering a stage overwrites its round rather
+/// than adding a duplicate — at the database level rather than in application
+/// code alone.
+model InterviewRound {
+  id    String @id @default(uuid()) @db.Uuid
+  bidId String @db.Uuid
+  bid   Bid    @relation(fields: [bidId], references: [id], onDelete: Cascade)
+
+  stage BidStatus
+  /// Naive local wall-clock, stored without a timezone so it round-trips
+  /// byte-for-byte with the `YYYY-MM-DDTHH:mm:ss` the frontend sends.
+  dateTime DateTime @db.Timestamp(0)
+
+  @@unique([bidId, stage])
+  @@index([bidId])
+  @@map("interview_rounds")
+}
+
+/// Set once work is won. A bid with a commitment is one whose status is
+/// `Started` or `Completed`; `agreedRate` overrides `rateAmount` for display.
+model Commitment {
+  id    String @id @default(uuid()) @db.Uuid
+  bidId String @unique @db.Uuid
+  bid   Bid    @relation(fields: [bidId], references: [id], onDelete: Cascade)
+
+  startDate    DateTime  @db.Date
+  endDate      DateTime? @db.Date
+  contractType String
+  agreedRate   Decimal   @db.Decimal(12, 2)
+
+  @@map("commitments")
+}
+
+// ---------------------------------------------------------------- per-user singletons
+
+/// Application identity used when applying to US remote jobs.
+///
+/// First-class: created by an admin without assigning a login, then shared with
+/// one or more Users via `ProfileShare`. `userId` remains optional for the
+/// legacy 1:1 stub still used by `/api/profile` and older account rows.
+model Profile {
+  id     String  @id @default(uuid()) @db.Uuid
+  /// Set only for legacy account stubs. Standalone application profiles leave
+  /// this null and grant access through `shares` instead.
+  userId String? @unique @db.Uuid
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  firstName  String @default("")
+  middleName String @default("")
+  lastName   String @default("")
+  /// When true, preferredFirstName / preferredLastName are shown on the form.
+  hasPreferredName   Boolean @default(false)
+  preferredFirstName String  @default("")
+  preferredLastName  String  @default("")
+  dateOfBirth DateTime? @db.Date
+
+  /// DOCX Maker template used by default when rendering this Profile's Resumes.
+  resumeTemplateId String @default("default.docx")
+
+  /// Legacy free-text place line kept for Resume templates; prefer structured address fields.
+  location String @default("")
+
+  addressLine String @default("")
+  city        String @default("")
+  state       String @default("")
+  zipCode     String @default("")
+  county      String @default("")
+  country     String @default("")
+  timezone    String @default("")
+
+  linkedinUrl  String @default("")
+  githubUrl    String @default("")
+  portfolioUrl String @default("")
+  otherUrl     String @default("")
+
+  email String @default("")
+  phone String @default("")
+
+  /// Countries the candidate is authorized to work in (job-application default).
+  authorizedCountries String[] @default([])
+
+  gender               String @default("")
+  ethnicity            String @default("")
+  disabilityStatus     String @default("")
+  veteranStatus        String @default("")
+  lgbtqIdentity        String @default("")
+  birthYear            String @default("")
+  securityClearance    String @default("")
+  drugTestWillingness  String @default("")
+  noticePeriod         String @default("")
+  openToRelocation     String @default("")
+  inPersonAvailability String @default("")
+  requireAccommodations String @default("")
+
+  /**
+   * The object key of the candidate's photo in the S3 bucket, not a URL: a
+   * presigned link expires, so storing one would hand out dead `src`s to
+   * anything that cached a profile. `GET /api/profile` signs a fresh URL from
+   * this on every read. Null until a photo is uploaded.
+   */
+  photoKey String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workExperience WorkExperience[]
+  education      Education[]
+  shares         ProfileShare[]
+  bids           Bid[]
+
+  @@map("profiles")
+}
+
+/// Grants a User account access to an application Profile.
+///
+/// Admins create profiles first, then choose which Users each profile is
+/// shared with. One profile may be shared with many users; one user may hold
+/// many shared profiles.
+model ProfileShare {
+  id        String   @id @default(uuid()) @db.Uuid
+  profileId String   @db.Uuid
+  profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  userId    String   @db.Uuid
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([profileId, userId])
+  @@index([userId])
+  @@map("profile_shares")
+}
+
+model WorkExperience {
+  id        String  @id @default(uuid()) @db.Uuid
+  profileId String  @db.Uuid
+  profile   Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  company  String @default("")
+  /// Job / position title (e.g. "Senior Software Engineer").
+  title    String @default("")
+  location String @default("")
+  /// `YYYY-MM`. A Resume prints "Aug 2024", so the day was never real data.
+  /// Nullable because the UI adds blank rows the user fills in later, and
+  /// because a role still held has no end.
+  startDate String?
+  endDate   String?
+
+  /// Preserves the order the user arranged the list in.
+  position Int
+
+  @@index([profileId])
+  @@map("work_experience")
+}
+
+model Education {
+  id        String  @id @default(uuid()) @db.Uuid
+  profileId String  @db.Uuid
+  profile   Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  degree     String @default("")
+  major      String @default("")
+  university String @default("")
+  location   String @default("")
+
+  /// `YYYY-MM`, nullable the same way a work experience's dates are.
+  startDate String?
+  endDate   String?
+
+  position Int
+
+  @@index([profileId])
+  @@map("education")
+}
+
+/**
+ * How Resumes are written, for the whole deployment — one row, edited by an
+ * admin. Environment variables are the fallback: a fresh install with no row
+ * behaves exactly as it did before this existed, and the first save takes over.
+ *
+ * The API key is stored encrypted (AES-256-GCM, see `src/crypto/secret-box.ts`)
+ * and never leaves the server: `GET` reports only whether one is set.
+ */
+model AiSettings {
+  /// Always `1`. A one-row table with a checked constraint rather than a
+  /// convention, so a second row cannot be inserted by accident.
+  ///
+  /// An `Int` rather than the `Boolean` this started as: Prisma cannot take a
+  /// boolean primary key in a `findUnique`'s `where`, which fails at runtime
+  /// rather than at compile time.
+  id Int @id @default(1)
+
+  provider     String?
+  model        String?
+  systemPrompt String?
+
+  /// The prompt the cover letter is written from, separate from the Resume's.
+  /// Two documents with two sets of rules: a single prompt that had to produce
+  /// both would be edited for one and quietly change the other.
+  coverLetterPrompt String?
+
+  /// Base64 `iv:authTag:ciphertext`. Null when no key has been saved here and
+  /// the environment's is in use.
+  apiKeyEncrypted String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("ai_settings")
+}
+
+/// One account's own AI prompts, layered over the deployment's (`AiSettings`).
+///
+/// A profile is a person with their own voice, and the prompt is where that
+/// voice is set — so each account may carry its own Resume and cover letter
+/// prompt, edited by the owner or by an admin. A null column means "use the
+/// deployment's", which in turn means "use the built-in default" when nothing
+/// is stored there either. The provider, model and key stay deployment-wide:
+/// they are infrastructure, not voice.
+model UserAiPrompts {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @unique @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  systemPrompt      String?
+  coverLetterPrompt String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("user_ai_prompts")
+}
+
+model Settings {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @unique @db.Uuid
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  dailyBidGoal Int   @default(100)
+  theme        Theme @default(LIGHT)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}

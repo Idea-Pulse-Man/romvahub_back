@@ -60,6 +60,13 @@ const ResumeFileInfoSchema = z.object({
 
 const BidResponseSchema = z.object({
   id: z.uuid(),
+  number: z
+    .number()
+    .int()
+    .describe(
+      'The number of the application within its filing scope (its Profile, or the rows of its ' +
+        'owner when it has none), counted up from 1 in the order applications were filed.',
+    ),
   candidate: BidCandidateSchema.optional().describe(
     'Who the application is filed under. Always the caller for a plain account; ' +
       "any profile in an admin's list.",
@@ -581,9 +588,10 @@ export const openApiDocument = {
             description: 'Earliest bidDate, inclusive (YYYY-MM-DD).' },
           { name: 'to', in: 'query', schema: { type: 'string' },
             description: 'Latest bidDate, inclusive (YYYY-MM-DD).' },
-          { name: 'sort', in: 'query', schema: { type: 'string', enum: ['bidDate', 'updatedAt'] },
-            description: 'Ordering, newest first either way. `bidDate` (the default) is the table\'s; ' +
-              '`updatedAt` is the Pipeline board\'s, so a card just moved sits at the top of its column.' },
+          { name: 'sort', in: 'query', schema: { type: 'string', enum: ['bidDate', 'updatedAt', 'number'] },
+            description: 'Ordering. `bidDate` (the default) is newest first; `updatedAt` is the Pipeline board\'s, ' +
+              'so a card just moved sits at the top of its column; `number` is the Applications table\'s: ' +
+              'the order the applications were filed in, #1 first.' },
           { name: 'page', in: 'query', schema: { type: 'integer', minimum: 1 },
             description: '1-based. Sending it, or `pageSize`, answers with a `BidPage` rather than the whole list.' },
           { name: 'pageSize', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100 },

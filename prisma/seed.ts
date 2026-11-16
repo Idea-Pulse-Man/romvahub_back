@@ -164,6 +164,8 @@ async function main(): Promise<void> {
     await prisma.bid.create({
       data: {
         userId: user.id,
+        // The account's applications were just cleared, so numbering starts over.
+        number: i + 1,
         company: `Company ${String.fromCharCode(65 + (i % 26))}${i}`,
         role: ROLES[i % ROLES.length] as string,
         location: LOCATIONS[i % LOCATIONS.length] as string,
@@ -181,6 +183,7 @@ async function main(): Promise<void> {
   await prisma.bid.create({
     data: {
       userId: user.id,
+      number: 46,
       company: 'Acme Corp',
       role: 'Lead React Developer',
       location: 'Remote',

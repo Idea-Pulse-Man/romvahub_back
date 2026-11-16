@@ -144,7 +144,7 @@ export const BidResumeQuerySchema = z.object({
   format: z.enum(RESUME_FORMATS).default('pdf'),
 });
 
-export const BID_SORTS = ['bidDate', 'updatedAt'] as const;
+export const BID_SORTS = ['bidDate', 'updatedAt', 'number'] as const;
 export const BidSortSchema = z.enum(BID_SORTS);
 
 /**
@@ -196,8 +196,9 @@ export const ListBidsQuerySchema = z.object({
    */
   profileId: z.uuid().optional(),
   sort: BidSortSchema.optional().describe(
-    'Ordering, newest first either way. `bidDate` (the default) is the table\'s; ' +
-      '`updatedAt` is the Pipeline board\'s, so a card just moved sits at the top of its column.',
+    'Ordering. `bidDate` (the default) is newest first; `updatedAt` is the Pipeline board\'s, so a ' +
+      'card just moved sits at the top of its column; `number` is the Applications table\'s: the ' +
+      'order the applications were filed in, #1 first.',
   ),
   page: pageNumber.optional().describe('1-based. Sending it, or `pageSize`, answers with a page rather than the whole list.'),
   pageSize: pageSize.optional().describe(`Rows per page, 1–${MAX_PAGE_SIZE}. Defaults to ${DEFAULT_PAGE_SIZE} when paging.`),

@@ -33,6 +33,7 @@ import {
   type ProofFingerprint,
 } from '../proof/fingerprint.js';
 import { bidInclude, candidatePhotoKey, toApiBid, type BidRow } from './bids.mapper.js';
+import { bidScopeWhere, lockBidScope, nextBidNumber, type BidScope } from './bid-number.js';
 import { ChatTranscriptSchema, type ChatMessage } from '../questions/questions.schemas.js';
 import * as profilesService from '../admin/profiles.service.js';
 import {
@@ -268,14 +269,20 @@ function profileScope(_actor: Actor, profileId: string | undefined): { profileId
 }
 
 /**
- * Newest first, by whichever date the screen reads.
+ * Newest first, by whichever date the screen reads — or, for `number`, the
+ * order the applications were filed in, which is what the Applications table
+ * shows beside its "#" column.
  *
- * The id is the last tiebreaker on both. Two applications imported in one
+ * The id is the last tiebreaker on all three. Two applications imported in one
  * batch share a `createdAt` to the millisecond, and without a total order the
  * database is free to hand them back in either sequence — which, across two
  * page requests, is a row that appears twice and a row that never appears.
  */
 function listOrderBy(sort: BidSort = 'bidDate'): PrismaTypes.BidOrderByWithRelationInput[] {
+  // Numbers repeat across filing scopes (every Profile has a #1), so an admin's
+  // unscoped list still needs the tiebreakers to be a total order.
+  if (sort === 'number') return [{ number: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }];
+
   const first: PrismaTypes.BidOrderByWithRelationInput =
     sort === 'updatedAt' ? { updatedAt: 'desc' } : { bidDate: 'desc' };
   return [first, { createdAt: 'desc' }, { id: 'desc' }];
@@ -480,16 +487,13 @@ async function resolveProfileFiling(
  */
 async function assertNotDuplicate(
   tx: PrismaTypes.TransactionClient,
-  scope: { userId: string; profileId: string | null },
+  scope: BidScope,
   /** `company` undefined skips the employer rule (an edit that kept the company). */
   candidate: { company?: string; jobUrl?: string | null },
   excludeId?: string,
 ): Promise<void> {
-  const scopeWhere: PrismaTypes.BidWhereInput = scope.profileId
-    ? { profileId: scope.profileId }
-    : { userId: scope.userId, profileId: null };
-  const lockKey = scope.profileId ? `bids:profile:${scope.profileId}` : `bids:user:${scope.userId}`;
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
+  const scopeWhere = bidScopeWhere(scope);
+  await lockBidScope(tx, scope);
 
   const rows = await tx.bid.findMany({
     where: { AND: [scopeWhere, ...(excludeId ? [{ id: { not: excludeId } }] : [])] },
@@ -537,10 +541,12 @@ export async function createBid(actor: Actor, input: CreateBidInput): Promise<Bi
 
   const row = await prisma.$transaction(async (tx) => {
     await assertNotDuplicate(tx, { userId, profileId }, input);
+    const number = await nextBidNumber(tx, { userId, profileId });
     return tx.bid.create({
     data: {
       userId,
       profileId,
+      number,
       company: input.company,
       role: input.role,
       jobUrl: input.jobUrl ?? null,

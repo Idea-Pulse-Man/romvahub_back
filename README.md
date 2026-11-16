@@ -109,8 +109,15 @@ what scopes a plain account's every query — the admin's scope is simply empty,
 Draft → Applied → Screening (Round 1) → Interview (Round 2) → Interview (Round 3)
       → Final Interview → Offer → Background Check Passed → Started → Completed
 
-Failed  (terminal — reachable from any stage)
+Failed, Expired, Other  (closed — reachable from any stage)
 ```
+
+`Expired` is a posting that was taken down or stopped accepting applications; `Other` is any
+ending the rest do not name.
+
+Every application also carries a `number`: its place in the order applications were filed
+within its Profile (or within its owner's own rows when it has no Profile), counted up from 1.
+It is assigned on create and never reused, so a deleted application leaves a gap.
 
 `Screening (Round 1)`, `Interview (Round 2)`, `Interview (Round 3)` and `Final Interview` are
 **interview stages**.
@@ -379,8 +386,9 @@ to a page:
 page rather than an error, because a table lands there when the last row on its page is
 deleted. `total` counts across the same filters, so "showing 26–50 of 312" is true even though
 25 rows were sent. The count and the page are read in one transaction so they describe the
-same moment. `sort` is `bidDate` (the default — the table's) or `updatedAt` (the board's);
-both are newest first and both end on the row id, so two applications imported in the same
+same moment. `sort` is `bidDate` (the default), `updatedAt` (the board's) or `number` (the
+table's). The first two are newest first and `number` is filing order, #1 first; all three
+end on the row id, so two applications imported in the same
 millisecond come back in the same order on every request — without that, a row could appear
 on two pages and another on none.
 

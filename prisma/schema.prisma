@@ -35,6 +35,11 @@ enum BidStatus {
   STARTED                 @map("Started")
   COMPLETED               @map("Completed")
   FAILED                  @map("Failed")
+  /// Closed without an outcome of the candidate's own: the posting was taken
+  /// down or stopped accepting applications.
+  EXPIRED                 @map("Expired")
+  /// Closed for any reason the other statuses do not name.
+  OTHER                   @map("Other")
 
   @@map("bid_status")
 }
@@ -190,6 +195,13 @@ model Bid {
   profileId String?  @db.Uuid
   profile   Profile? @relation(fields: [profileId], references: [id], onDelete: SetNull)
 
+  /// The application's number within its filing scope — the Profile when it
+  /// has one, otherwise the owner's legacy rows — counted up from 1 in the
+  /// order applications were filed. Shown as "#" in the Applications table.
+  /// Assigned on create (see `nextBidNumber`) and never reused, so deleting an
+  /// application leaves a gap rather than renumbering the ones after it.
+  number Int
+
   company        String
   role           String
   jobUrl         String?
@@ -285,6 +297,7 @@ model Bid {
   @@index([userId, bidDate])
   @@index([profileId, status])
   @@index([profileId, bidDate])
+  @@unique([profileId, number])
   @@map("bids")
 }
 

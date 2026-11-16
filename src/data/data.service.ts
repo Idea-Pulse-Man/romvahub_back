@@ -5,6 +5,7 @@ import { toDbRateType, toDbStatus } from '../domain/status.js';
 import { isInterviewStage } from '../domain/types.js';
 import type { DataBundle } from '../domain/types.js';
 import { bidInclude, toApiBid } from '../bids/bids.mapper.js';
+import { nextBidNumber } from '../bids/bid-number.js';
 import type { UserRole } from '../auth/auth.schemas.js';
 import * as profileService from '../profile/profile.service.js';
 import * as settingsService from '../settings/settings.service.js';
@@ -61,10 +62,16 @@ export async function importData(
       ({ count: bidsDeleted } = await tx.bid.deleteMany({ where: { userId } }));
     }
 
+    // A restored backup is filed under the account itself, with no Profile, and
+    // numbered on from whatever that scope already holds — from 1 after a
+    // `replace`, which has just emptied it.
+    let number = await nextBidNumber(tx, { userId, profileId: null });
+
     for (const bid of bundle.bids) {
       await tx.bid.create({
         data: {
           userId,
+          number: number++,
           company: bid.company,
           role: bid.role,
           jobUrl: bid.jobUrl ?? null,

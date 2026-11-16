@@ -113,6 +113,75 @@ describe('bid CRUD', () => {
   });
 });
 
+describe('application numbers', () => {
+  it('numbers applications from 1 in the order they are filed, per account', async () => {
+    const first = await createUser();
+    const second = await createUser();
+
+    const a = await createBid(first);
+    const b = await createBid(first);
+    const other = await createBid(second);
+
+    expect([a.number, b.number]).toEqual([1, 2]);
+    // Another account's applications are numbered on their own.
+    expect(other.number).toBe(1);
+  });
+
+  it('leaves a gap rather than renumbering when an application is deleted', async () => {
+    const admin = await createAdmin();
+    await createBid(admin);
+    const second = await createBid(admin);
+    await createBid(admin);
+
+    await admin.agent.delete(`/api/bids/${second.id}`).expect(204);
+    const fourth = await createBid(admin);
+    expect(fourth.number).toBe(4);
+
+    const list = await admin.agent.get('/api/bids?sort=number').expect(200);
+    expect(list.body.map((bid: { number: number }) => bid.number)).toEqual([1, 3, 4]);
+  });
+
+  it('lists in filing order when sorted by number, whatever the bid dates', async () => {
+    const user = await createUser();
+    await createBid(user, { company: 'Filed first', bidDate: '2026-06-01' });
+    await createBid(user, { company: 'Filed second', bidDate: '2026-01-01' });
+
+    const response = await user.agent.get('/api/bids?sort=number&page=1&pageSize=10').expect(200);
+    expect(response.body.items.map((bid: { company: string }) => bid.company)).toEqual([
+      'Filed first',
+      'Filed second',
+    ]);
+  });
+});
+
+describe('the closed statuses', () => {
+  it('accepts Expired and Other, and filters by them', async () => {
+    const user = await createUser();
+    const expired = await createBid(user, { status: 'Expired' });
+    const other = await createBid(user);
+    await createBid(user);
+
+    expect(expired.status).toBe('Expired');
+    const moved = await user.agent.patch(`/api/bids/${other.id}`).send({ status: 'Other' }).expect(200);
+    expect(moved.body.status).toBe('Other');
+
+    const filtered = await user.agent.get('/api/bids?status=Other').expect(200);
+    expect(filtered.body.map((bid: { id: string }) => bid.id)).toEqual([other.id]);
+  });
+
+  it('counts them on the pipeline board', async () => {
+    const user = await createUser();
+    await createBid(user, { status: 'Expired' });
+    await createBid(user, { status: 'Other' });
+
+    const board = await user.agent.get('/api/bids/pipeline').expect(200);
+    const totals = Object.fromEntries(
+      board.body.stages.map((stage: { status: string; total: number }) => [stage.status, stage.total]),
+    );
+    expect(totals).toMatchObject({ Expired: 1, Other: 1 });
+  });
+});
+
 describe('per-user isolation', () => {
   it("hides another user's bid behind a 404, not a 403", async () => {
     const owner = await createUser();

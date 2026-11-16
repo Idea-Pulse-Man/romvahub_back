@@ -18,7 +18,9 @@ export type BidStatus =
   | 'Background Check Passed'
   | 'Started'
   | 'Completed'
-  | 'Failed';
+  | 'Failed'
+  | 'Expired'
+  | 'Other';
 
 export const BID_STATUSES = [
   'Draft',
@@ -32,6 +34,8 @@ export const BID_STATUSES = [
   'Started',
   'Completed',
   'Failed',
+  'Expired',
+  'Other',
 ] as const satisfies readonly BidStatus[];
 
 /** Statuses that cannot be entered without a scheduled date and time. */
@@ -156,6 +160,12 @@ export interface ResumeFileInfo {
 
 export interface Bid {
   id: string;
+  /**
+   * The application's number within its filing scope (its Profile, or its
+   * owner's legacy rows): 1 for the first one filed, counting up. The "#"
+   * column of the Applications table. Server-assigned; never reused.
+   */
+  number: number;
   company: string;
   role: string;
   jobUrl?: string;
@@ -222,8 +232,11 @@ export interface Bid {
   updatedAt: string;
 }
 
-/** The orderings the list endpoint offers. Both are newest first. */
-export type BidSort = 'bidDate' | 'updatedAt';
+/**
+ * The orderings the list endpoint offers. `bidDate` and `updatedAt` are newest
+ * first; `number` is the order the applications were filed in, first to last.
+ */
+export type BidSort = 'bidDate' | 'updatedAt' | 'number';
 
 /**
  * One page of the list, for the screens that no longer load it whole.

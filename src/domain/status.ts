@@ -26,6 +26,7 @@ const STATUS_TO_DB = {
   Failed: DbBidStatus.FAILED,
   Expired: DbBidStatus.EXPIRED,
   Other: DbBidStatus.OTHER,
+  Skip: DbBidStatus.SKIP,
 } as const satisfies Record<BidStatus, DbBidStatus>;
 
 const STATUS_FROM_DB = Object.fromEntries(

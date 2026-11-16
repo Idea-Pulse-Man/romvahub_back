@@ -7,6 +7,7 @@ import { validate, type ValidatedRequest } from '../http/validate.js';
 import * as bidsService from './bids.service.js';
 import { stepsRouter } from './steps.routes.js';
 import { autoMakeNewApplication } from '../local/chatgpt-resume.js';
+import { companySizeFromNotes, isLargeCompany } from './company-size.js';
 import * as resumeService from '../resume/resume.service.js';
 import * as coverLetterService from '../cover-letter/cover-letter.service.js';
 import { BadRequestError, NotFoundError } from '../http/errors.js';
@@ -83,6 +84,11 @@ bidsRouter.get('/version', validate({ query: BidsVersionQuerySchema }), async (r
 bidsRouter.post('/', validate({ body: CreateBidSchema }), async (req, res) => {
   const body = (req as ValidatedRequest<CreateBidInput>).valid.body;
   const actor = currentActor(req);
+  // A new Draft at a company of more than 500 employees (the scraper's
+  // "Size:" line in the notes) is filed as Skip — and so never made.
+  if (body.status === 'Draft' && isLargeCompany(companySizeFromNotes(body.notes))) {
+    body.status = 'Skip';
+  }
   const bid = await bidsService.createBid(actor, body);
   // A new application gets its Resume and cover letter made in the
   // background (CHATGPT_AUTO_MAKE=true) — from the form or the scraper alike.

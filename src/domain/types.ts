@@ -20,7 +20,8 @@ export type BidStatus =
   | 'Completed'
   | 'Failed'
   | 'Expired'
-  | 'Other';
+  | 'Other'
+  | 'Skip';
 
 export const BID_STATUSES = [
   'Draft',
@@ -36,6 +37,7 @@ export const BID_STATUSES = [
   'Failed',
   'Expired',
   'Other',
+  'Skip',
 ] as const satisfies readonly BidStatus[];
 
 /** Statuses that cannot be entered without a scheduled date and time. */

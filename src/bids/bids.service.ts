@@ -204,6 +204,7 @@ async function listWhere(actor: Actor, query: ListBidsQuery): Promise<PrismaType
   if (profile.profileId) clauses.push(profile);
 
   if (query.status) clauses.push({ status: toDbStatus(query.status) });
+  if (query.statuses?.length) clauses.push({ status: { in: query.statuses.map(toDbStatus) } });
 
   // The same employer however it was written — "Acme", "ACME, Inc.", "The Acme
   // Company" — but the whole name rather than a substring: "Meta" must not

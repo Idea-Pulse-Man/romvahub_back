@@ -111,7 +111,7 @@ export function makingNow(): string[] {
  */
 export function autoMakeNewApplication(actor: Actor, bid: Bid): void {
   if (process.env.CHATGPT_AUTO_MAKE?.trim().toLowerCase() !== 'true') return;
-  if (!bid.jobDescription?.trim()) return;
+  if (bid.status === 'Skip' || !bid.jobDescription?.trim()) return;
   void makeResumeWithChatGpt(actor, bid.id).then(
     (made) => {
       logger.info(
@@ -125,6 +125,9 @@ export function autoMakeNewApplication(actor: Actor, bid: Bid): void {
 
 async function make(actor: Actor, bidId: string): Promise<MadeResume> {
   const bid = await bidsService.getBid(actor, bidId);
+  if (bid.status === 'Skip') {
+    throw new BadRequestError('This application is marked Skip, so no Resume or cover letter is made for it.');
+  }
   const description = bid.jobDescription?.trim();
   if (!description) {
     throw new BadRequestError('This application has no job description. Add one, then click Make again.');

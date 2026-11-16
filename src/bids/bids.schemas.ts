@@ -188,6 +188,17 @@ export const ListBidsQuerySchema = z.object({
       'What the Jobright / HiringCafe extension asks before saving: is this posting already an application?',
   ),
   status: BidStatusSchema.optional(),
+  statuses: z
+    .string()
+    .trim()
+    .max(500)
+    .transform((value) => value.split(',').map((status) => status.trim()).filter(Boolean))
+    .pipe(z.array(BidStatusSchema).max(BID_STATUSES.length))
+    .optional()
+    .describe(
+      'Several statuses, comma-separated — any of them matches: `Failed,Skip,Expired,Other`. ' +
+        'The Applications table\'s grouped filter (Draft, Applied, Progress, Failed).',
+    ),
   from: dateOnly.optional(),
   to: dateOnly.optional(),
   /**

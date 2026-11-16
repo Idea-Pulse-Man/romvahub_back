@@ -40,6 +40,9 @@ enum BidStatus {
   EXPIRED                 @map("Expired")
   /// Closed for any reason the other statuses do not name.
   OTHER                   @map("Other")
+  /// Not worth applying to — set automatically for a company with more than
+  /// 500 employees. No Resume or cover letter is made for it.
+  SKIP                    @map("Skip")
 
   @@map("bid_status")
 }

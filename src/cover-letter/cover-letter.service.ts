@@ -100,6 +100,12 @@ const CONTENT_TYPE: Record<ResumeFormat, string> = {
 export interface CoverLetterNaming {
   /** `YYYY-MM-DD`. Today's date when the caller has nothing better. */
   date?: string;
+  /**
+   * The application Profile whose name, contact line and signature the letter
+   * carries. Without it, the account's own profile — which, for an
+   * application filed under a Profile, has no name ("Your Name").
+   */
+  profileId?: string;
 }
 
 /** Today, as the letter dates itself when nothing else says. */
@@ -120,8 +126,11 @@ export async function renderCoverLetter(
   input: RenderCoverLetterInput,
   naming: CoverLetterNaming = {},
 ): Promise<RenderedCoverLetter> {
-  // Created at registration, so this never 404s for a real account.
-  const profile = await profileService.getProfile(userId);
+  // The application's Profile when it has one; else the account's own,
+  // created at registration, so this never 404s for a real account.
+  const profile = naming.profileId
+    ? await profileService.getProfileById(naming.profileId)
+    : await profileService.getProfile(userId);
 
   const fileName = (extension: string) =>
     resumeFileName({

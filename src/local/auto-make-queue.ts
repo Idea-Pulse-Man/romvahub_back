@@ -93,17 +93,32 @@ export async function claimNext(
   return null;
 }
 
-/** Whether `bidId` is held right now (by anyone): the job routes refuse a step on an application nobody took. */
-export async function isClaimed(bidId: string): Promise<boolean> {
-  const row = await prisma.autoMakeClaim.findUnique({ where: { bidId }, select: { claimedAt: true } });
-  return !!row?.claimedAt && Date.now() - row.claimedAt.getTime() < CLAIM_TTL_MINUTES * 60_000;
+/** Only the rows `worker` holds; no condition when the caller did not say who it is (older workers). */
+function heldBy(worker: string | undefined) {
+  return worker ? PrismaTypes.sql`AND "worker" = ${worker}` : PrismaTypes.empty;
 }
 
-/** A step done: the hold is renewed, so a slow ChatGPT does not cost the worker its application. */
-export async function touchClaim(bidId: string): Promise<void> {
-  await prisma.$executeRaw`
+/**
+ * Whether `bidId` is held right now — by `worker` when given, else by anyone:
+ * the job routes refuse a step on an application nobody (or someone else) holds.
+ */
+export async function isClaimed(bidId: string, worker?: string): Promise<boolean> {
+  const row = await prisma.autoMakeClaim.findUnique({ where: { bidId }, select: { claimedAt: true, worker: true } });
+  if (!row?.claimedAt || Date.now() - row.claimedAt.getTime() >= CLAIM_TTL_MINUTES * 60_000) return false;
+  return !worker || row.worker === worker;
+}
+
+/**
+ * A step done, or a worker still busy on it: the hold is renewed, so a slow
+ * ChatGPT does not cost the worker its application. False when the hold had
+ * already run out or is someone else's.
+ */
+export async function touchClaim(bidId: string, worker?: string): Promise<boolean> {
+  const updated = await prisma.$executeRaw`
     UPDATE "auto_make_claims" SET "claimedAt" = ${NOW_UTC}, "updatedAt" = ${NOW_UTC}
-    WHERE "bidId" = ${bidId}::uuid AND "claimedAt" IS NOT NULL`;
+    WHERE "bidId" = ${bidId}::uuid AND "claimedAt" IS NOT NULL
+      AND "claimedAt" >= ${NOW_UTC} - make_interval(mins => ${CLAIM_TTL_MINUTES}) ${heldBy(worker)}`;
+  return updated > 0;
 }
 
 /** Finished: the row goes, and with it any record of earlier failures. */
@@ -115,20 +130,39 @@ export async function completeClaim(bidId: string): Promise<void> {
  * Handed back. `failed`: the application's own problem (an answer that could
  * not be read…), counted, and it waits before the next try. Otherwise the
  * worker could not get to it (ChatGPT signed out, the window closed): free for
- * the next worker at once, no count.
+ * the next worker at once, no count. With `worker`, only that worker's own
+ * hold is handed back: one that lost the application to another worker
+ * (its hold ran out) leaves the new holder alone.
  */
-export async function releaseClaim(bidId: string, outcome: { failed: boolean; error?: string }): Promise<void> {
+export async function releaseClaim(
+  bidId: string,
+  outcome: { failed: boolean; error?: string },
+  worker?: string,
+): Promise<void> {
   const error = outcome.error?.slice(0, 2000) ?? null;
   if (outcome.failed) {
     await prisma.$executeRaw`
       UPDATE "auto_make_claims"
       SET "claimedAt" = NULL, "attempts" = "attempts" + 1, "failedAt" = ${NOW_UTC}, "lastError" = ${error}, "updatedAt" = ${NOW_UTC}
-      WHERE "bidId" = ${bidId}::uuid`;
+      WHERE "bidId" = ${bidId}::uuid ${heldBy(worker)}`;
   } else {
     await prisma.$executeRaw`
       UPDATE "auto_make_claims" SET "claimedAt" = NULL, "updatedAt" = ${NOW_UTC}
-      WHERE "bidId" = ${bidId}::uuid`;
+      WHERE "bidId" = ${bidId}::uuid ${heldBy(worker)}`;
   }
+}
+
+/**
+ * Everything `worker` holds among the applications in `scope`, handed back
+ * uncounted — for a desktop agent or extension that has just started, whose
+ * previous run stopped mid-application, so its work need not wait out CLAIM_TTL.
+ */
+export async function releaseHeldBy(scope: PrismaTypes.BidWhereInput, worker: string): Promise<number> {
+  const { count } = await prisma.autoMakeClaim.updateMany({
+    where: { worker, claimedAt: { not: null }, bid: scope },
+    data: { claimedAt: null },
+  });
+  return count;
 }
 
 /**

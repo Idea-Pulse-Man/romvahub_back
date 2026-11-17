@@ -280,7 +280,14 @@ function answerText(answer: AnswerSoFar): string {
  * window is never closed, which would quit Chrome.
  */
 async function ask(message: string): Promise<string> {
-  const page = await (await browser()).newPage();
+  // Opening a tab on a dead connection would hang the same way: limited, and
+  // the connection dropped, so the next try reconnects.
+  const opened = await withTimeout((async () => (await browser()).newPage())(), 30_000);
+  if (opened === TIMED_OUT) {
+    connection = null;
+    throw new ServiceUnavailableError('The ChatGPT window did not respond. It reconnects on the next try.');
+  }
+  const page = opened;
   let keepOpen = false;
   try {
     return await askIn(page, message);
@@ -402,6 +409,28 @@ let queue: Promise<unknown> = Promise.resolve();
  * never interrupted. With no ChatGPT tab at all, one is opened once.
  */
 export async function chatGptReady(): Promise<boolean> {
+  // A connection to a Chrome that was closed can stay "connected" and answer
+  // nothing, so every check would wait out the long protocol timeout (minutes).
+  // A quick limit instead: no answer, drop the connection and try afresh.
+  const answer = await withTimeout(readyNow(), 15_000);
+  if (answer === TIMED_OUT) {
+    connection = null;
+    return false;
+  }
+  return answer;
+}
+
+const TIMED_OUT = Symbol('timed out');
+
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T | typeof TIMED_OUT> {
+  let timer: NodeJS.Timeout | undefined;
+  const limit = new Promise<typeof TIMED_OUT>((resolve) => {
+    timer = setTimeout(() => resolve(TIMED_OUT), ms);
+  });
+  return Promise.race([work, limit]).finally(() => clearTimeout(timer));
+}
+
+async function readyNow(): Promise<boolean> {
   try {
     const pages = await (await browser()).pages();
     const chat = pages.find((page) => /chatgpt\.com|chat\.openai\.com/.test(page.url()));

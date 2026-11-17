@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { requireAuth } from '../auth/require-auth.js';
 import { validate, type ValidatedRequest } from '../http/validate.js';
 import { prisma } from '../prisma.js';
+import { retryAllNow } from './auto-make-queue.js';
 
 /**
  * The automatic Resume maker's Start / Stop switch and its status — shared
@@ -46,6 +47,9 @@ export async function getAutoMakeStatus(): Promise<AutoMakeStatus> {
 
 export async function setAutoMakeEnabled(enabled: boolean): Promise<AutoMakeStatus> {
   await prisma.autoMakeState.upsert({ where: { id: 1 }, create: { id: 1, enabled }, update: { enabled } });
+  // Start: everything missing a Resume or a cover letter is tried again now,
+  // earlier failures included.
+  if (enabled) await retryAllNow();
   return getAutoMakeStatus();
 }
 

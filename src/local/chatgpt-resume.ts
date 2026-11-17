@@ -13,6 +13,7 @@ import { renderCoverLetter } from '../cover-letter/cover-letter.service.js';
 import { settingsForMake } from '../profiles/profile-prompts.service.js';
 import { logger } from '../logger.js';
 import { askChatGpt, parseJsonAnswer } from './chatgpt-web.js';
+import { autoMakeEnabled } from './auto-make-state.js';
 
 /**
  * The Applications table's "Make": one application's Resume written by
@@ -112,8 +113,12 @@ export function makingNow(): string[] {
 export function autoMakeNewApplication(actor: Actor, bid: Bid): void {
   if (process.env.CHATGPT_AUTO_MAKE?.trim().toLowerCase() !== 'true') return;
   if (bid.status === 'Skip' || !bid.jobDescription?.trim()) return;
-  void makeResumeWithChatGpt(actor, bid.id).then(
+  // Stopped on romva.space: leave it; the watcher picks it up after Start.
+  void autoMakeEnabled()
+    .then((enabled) => (enabled ? makeResumeWithChatGpt(actor, bid.id) : null))
+    .then(
     (made) => {
+      if (!made) return;
       logger.info(
         { bidId: bid.id, savedTo: made.savedTo, saveError: made.saveError, coverLetterError: made.coverLetterError },
         'Auto Make finished',

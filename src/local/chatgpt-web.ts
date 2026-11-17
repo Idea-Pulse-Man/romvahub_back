@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import type { Browser, Page } from 'puppeteer-core';
@@ -94,7 +94,7 @@ const IN_PAGE = {
     const tail = at >= 0 ? body.slice(at + ${marker.length}) : '';
     const streaming = Array.from(document.querySelectorAll('button')).some((b) => {
       const label = (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('data-testid') || '');
-      return /stop[ -](generating|streaming|response|button)/i.test(label);
+      return /\\bstop\\b|stop[-_ ]?(generating|streaming|response|button)/i.test(label);
     });
     return { pres, tail, streaming };
   })()`,
@@ -136,6 +136,22 @@ async function debuggerUp(port: number): Promise<boolean> {
   }
 }
 
+/**
+ * Tells Chrome its last run ended normally. Ending the API ends the Chrome it
+ * started, which Chrome takes for a crash and offers to restore the old tabs.
+ */
+function markExitedCleanly(profileDir: string): void {
+  const file = path.join(profileDir, 'Default', 'Preferences');
+  try {
+    if (!existsSync(file)) return;
+    const prefs = JSON.parse(readFileSync(file, 'utf8')) as { profile?: Record<string, unknown> };
+    prefs.profile = { ...prefs.profile, exit_type: 'Normal', exited_cleanly: true };
+    writeFileSync(file, JSON.stringify(prefs));
+  } catch (error) {
+    logger.warn({ err: error }, 'Could not mark the ChatGPT browser profile as closed cleanly');
+  }
+}
+
 let connection: Promise<Browser> | null = null;
 
 /** Connects to the ChatGPT Chrome window, starting it when it is not running. */
@@ -150,6 +166,7 @@ async function connect(): Promise<Browser> {
       );
     }
     mkdirSync(settings.profileDir, { recursive: true });
+    markExitedCleanly(settings.profileDir);
     const child = spawn(
       settings.browserPath,
       [
@@ -157,6 +174,9 @@ async function connect(): Promise<Browser> {
         `--user-data-dir=${settings.profileDir}`,
         '--no-first-run',
         '--no-default-browser-check',
+        // No "Restore pages? Chrome didn't shut down correctly" bubble: the
+        // window is often ended with the API rather than closed by hand.
+        '--hide-crash-restore-bubble',
         settings.url,
       ],
       { detached: true, stdio: 'ignore' },
@@ -196,13 +216,6 @@ async function browser(): Promise<Browser> {
     connection = null;
   });
   return connection;
-}
-
-/** The tab chatgpt.com is open in, reused between questions. */
-async function chatPage(): Promise<Page> {
-  const pages = await (await browser()).pages();
-  const open = pages.find((page) => /chatgpt\.com|chat\.openai\.com/.test(page.url()));
-  return open ?? pages[0] ?? (await (await browser()).newPage());
 }
 
 /** Puts the whole message into ChatGPT's composer, checked by length. */
@@ -256,9 +269,41 @@ function answerText(answer: AnswerSoFar): string {
   return answer.tail.trim();
 }
 
+/**
+ * One message in its own new tab, closed when the chat is over — so finished
+ * chats do not pile up, and a new chat never starts on a page that still shows
+ * the last one (whose code block is another application's Resume).
+ *
+ * The tab is left open when ChatGPT needs the person (signed out, a "verify you
+ * are human" check): that is where they act on it. And the last tab in the
+ * window is never closed, which would quit Chrome.
+ */
 async function ask(message: string): Promise<string> {
+  const page = await (await browser()).newPage();
+  let keepOpen = false;
+  try {
+    return await askIn(page, message);
+  } catch (error) {
+    keepOpen = error instanceof ServiceUnavailableError;
+    throw error;
+  } finally {
+    if (!keepOpen) await closeChat(page);
+  }
+}
+
+async function closeChat(page: Page): Promise<void> {
+  try {
+    if (page.isClosed()) return;
+    const others = (await (await browser()).pages()).filter((other) => other !== page);
+    if (others.length > 0) await page.close();
+    else await page.goto(config().url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  } catch (error) {
+    logger.warn({ err: error }, 'Could not close the finished ChatGPT tab');
+  }
+}
+
+async function askIn(page: Page, message: string): Promise<string> {
   const settings = config();
-  const page = await chatPage();
   await page.bringToFront();
 
   const url = new URL(settings.url);
@@ -276,6 +321,19 @@ async function ask(message: string): Promise<string> {
     throw new ServiceUnavailableError(
       'ChatGPT is not signed in. Sign in on chatgpt.com in the Chrome window that opened, then click Make again.',
     );
+  }
+
+  // A fresh, empty chat before anything is counted or sent. ChatGPT is a
+  // single-page app: right after the navigation the previous chat's messages
+  // (and its code block — the last application's Resume) can still be on the
+  // page, and counting them as "before" hides the new answer, or reading them
+  // would hand back the wrong application's Resume.
+  if (!(await freshChat(page))) {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 });
+    await page.waitForSelector(SELECTORS.composer, { visible: true, timeout: 30_000 }).catch(() => undefined);
+    if (!(await freshChat(page))) {
+      throw new ServiceUnavailableError('ChatGPT did not open a new, empty chat. Check the Chrome window, then try again.');
+    }
   }
 
   // The message ends with a line of its own, so the answer can be found in
@@ -317,14 +375,67 @@ async function ask(message: string): Promise<string> {
   );
 }
 
+/** Waits (up to 20s) for the page to be a new chat: no conversation path, no code blocks, no messages. */
+async function freshChat(page: Page): Promise<boolean> {
+  const empty = `(() => !location.pathname.startsWith('/c/')
+    && document.querySelectorAll('pre').length === 0
+    && !/(You said:|ChatGPT said:)/.test(document.body.innerText || ''))()`;
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    if (await page.evaluate(empty)) return true;
+    await sleep(500);
+  }
+  return false;
+}
+
 let queue: Promise<unknown> = Promise.resolve();
+
+/**
+ * Whether a Make could start now, judged from the tabs already open — nothing
+ * is reloaded, so a sign-in in progress (on chatgpt.com or auth.openai.com) is
+ * never interrupted. With no ChatGPT tab at all, one is opened once.
+ */
+export async function chatGptReady(): Promise<boolean> {
+  try {
+    const pages = await (await browser()).pages();
+    const chat = pages.find((page) => /chatgpt\.com|chat\.openai\.com/.test(page.url()));
+    if (!chat) {
+      // Mid sign-in on another domain: wait. Otherwise open chatgpt.com.
+      if (pages.some((page) => /openai\.com|google\.com|apple\.com|live\.com/.test(page.url()))) return false;
+      const page = pages[0] ?? (await (await browser()).newPage());
+      await page.goto(config().url, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => undefined);
+      return false;
+    }
+    const composer = Boolean(await chat.evaluate(`!!document.querySelector(${JSON.stringify(SELECTORS.composer)})`));
+    if (!composer) return false;
+    return !config().requireSignIn || !(await chat.evaluate(IN_PAGE.signedOut));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The ChatGPT tab or window was closed while a message was in it: say so, as
+ * "ChatGPT unavailable" rather than a failure of this application, so the
+ * automatic Make waits and tries again (in a reopened window) instead of
+ * giving up on the row. Anything else is passed on unchanged.
+ */
+function windowClosed(error: unknown): never {
+  const text = error instanceof Error ? `${error.name} ${error.message}` : String(error);
+  if (/TargetCloseError|Target closed|Session closed|detached|Connection closed|Protocol error.*closed/i.test(text)) {
+    throw new ServiceUnavailableError(
+      'The ChatGPT window was closed while it was writing. It reopens by itself; click Make again (automatic Makes retry on their own).',
+    );
+  }
+  throw error;
+}
 
 /**
  * Sends one message to ChatGPT in a new chat and returns its answer. Calls are
  * queued: a second Make waits for the first answer rather than typing over it.
  */
 export function askChatGpt(message: string): Promise<string> {
-  const run = queue.then(() => ask(message));
+  const run = queue.then(() => ask(message).catch(windowClosed));
   queue = run.catch(() => undefined);
   return run;
 }
@@ -334,9 +445,39 @@ export function askChatGpt(message: string): Promise<string> {
  * span from the first `{` to the last `}`. Trailing commas and smart quotes —
  * the two things a chat answer gets wrong most — are repaired once.
  */
+/** The balanced `{…}` spans at the top level of a text, braces inside strings ignored. */
+function topLevelObjects(text: string): string[] {
+  const found: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"' && depth > 0) inString = true;
+    else if (ch === '{') {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === '}' && depth > 0) {
+      depth -= 1;
+      if (depth === 0) found.push(text.slice(start, i + 1));
+    }
+  }
+  return found;
+}
+
 export function parseJsonAnswer(answer: string): unknown {
   const fenced = /```(?:json)?\s*\n([\s\S]*?)\n```/i.exec(answer)?.[1];
   const candidates = [answer, fenced];
+  // Every complete top-level object, last first: when the text read off the
+  // page also holds the prompt (and its INPUT JSON), the answer is the last.
+  candidates.push(...topLevelObjects(answer).reverse());
   const start = answer.indexOf('{');
   const end = answer.lastIndexOf('}');
   if (start >= 0 && end > start) candidates.push(answer.slice(start, end + 1));

@@ -644,3 +644,27 @@ model Settings {
 
   @@map("settings")
 }
+
+/// The automatic Resume maker's switch and heartbeat. One row (`id = 1`).
+///
+/// The maker runs on one computer — the one with the ChatGPT window — while
+/// the Start / Stop button is on romva.space, served by the deployed API. The
+/// database is the one thing both reach, so the switch lives here: the button
+/// writes `enabled`, the maker reads it, and the maker writes back when it was
+/// last running and what it is making, for the button to show.
+model AutoMakeState {
+  id      Int     @id @default(1)
+  enabled Boolean @default(false)
+
+  /// The maker's last check-in. Older than a couple of minutes: not running.
+  workerSeenAt     DateTime?
+  /// The application being made now, if any.
+  currentBidId     String?   @db.Uuid
+  currentCompany   String?
+  /// Why it is waiting rather than making (ChatGPT signed out…), if it is.
+  waitingReason    String?
+
+  updatedAt DateTime @updatedAt
+
+  @@map("auto_make_state")
+}

@@ -758,7 +758,9 @@ export async function replaceResumeFiles(
     }
     // The Resume changed, so the application did: the version poll must see it.
     await tx.bid.update({ where: { id: existing.id }, data: { updatedAt: new Date() } });
-  });
+    // Two files of ~100 KB each over a remote pooler can take more than
+    // Prisma's default 5s; past it the whole save was thrown away.
+  }, { timeout: 30_000, maxWait: 10_000 });
 
   return getBid(actor, existing.id);
 }

@@ -2,6 +2,7 @@ import { createApp } from './app.js';
 import { env } from './env.js';
 import { logger } from './logger.js';
 import { prisma } from './prisma.js';
+import { startAutoMakeWatcher } from './local/auto-make-watcher.js';
 
 const app = createApp();
 
@@ -10,6 +11,9 @@ const server = app.listen(env.PORT, () => {
     { port: env.PORT, env: env.NODE_ENV },
     `RemoteOps API listening on http://localhost:${env.PORT} (docs at /docs)`,
   );
+  // Resumes for applications filed elsewhere (the scraper posts to the
+  // deployed API, which cannot drive Chrome). Off unless CHATGPT_AUTO_MAKE=true.
+  startAutoMakeWatcher();
 });
 
 /**

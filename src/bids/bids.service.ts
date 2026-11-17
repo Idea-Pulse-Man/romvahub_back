@@ -186,7 +186,7 @@ export async function assertBidAccess(actor: Actor, bidId: string): Promise<void
   if (!row) throw new NotFoundError('No such application.');
 }
 
-function bidAccessScope(actor: Actor): PrismaTypes.BidWhereInput {
+export function bidAccessScope(actor: Actor): PrismaTypes.BidWhereInput {
   if (isAdmin(actor)) return {};
   return {
     OR: [

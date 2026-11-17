@@ -6,6 +6,7 @@ import path from 'node:path';
 import type { Browser, Page } from 'puppeteer-core';
 import { GatewayTimeoutError, BadGatewayError, ServiceUnavailableError } from '../http/errors.js';
 import { logger } from '../logger.js';
+import { parseJsonAnswer } from './json-answer.js';
 
 /**
  * Asks ChatGPT a question through chatgpt.com in a real Chrome window on this
@@ -308,7 +309,12 @@ async function askIn(page: Page, message: string): Promise<string> {
 
   const url = new URL(settings.url);
   if (settings.temporary) url.searchParams.set('temporary-chat', 'true');
-  await page.goto(url.toString(), { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  // chatgpt.com is sometimes slow to answer; one more try before giving up.
+  try {
+    await page.goto(url.toString(), { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  } catch {
+    await page.goto(url.toString(), { waitUntil: 'domcontentloaded', timeout: 90_000 });
+  }
 
   try {
     await page.waitForSelector(SELECTORS.composer, { visible: true, timeout: 30_000 });
@@ -440,67 +446,4 @@ export function askChatGpt(message: string): Promise<string> {
   return run;
 }
 
-/**
- * The JSON object in a chat answer: the whole answer, a fenced block, or the
- * span from the first `{` to the last `}`. Trailing commas and smart quotes —
- * the two things a chat answer gets wrong most — are repaired once.
- */
-/** The balanced `{…}` spans at the top level of a text, braces inside strings ignored. */
-function topLevelObjects(text: string): string[] {
-  const found: string[] = [];
-  let depth = 0;
-  let start = -1;
-  let inString = false;
-  let escaped = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (inString) {
-      if (escaped) escaped = false;
-      else if (ch === '\\') escaped = true;
-      else if (ch === '"') inString = false;
-      continue;
-    }
-    if (ch === '"' && depth > 0) inString = true;
-    else if (ch === '{') {
-      if (depth === 0) start = i;
-      depth += 1;
-    } else if (ch === '}' && depth > 0) {
-      depth -= 1;
-      if (depth === 0) found.push(text.slice(start, i + 1));
-    }
-  }
-  return found;
-}
-
-export function parseJsonAnswer(answer: string): unknown {
-  const fenced = /```(?:json)?\s*\n([\s\S]*?)\n```/i.exec(answer)?.[1];
-  const candidates = [answer, fenced];
-  // Every complete top-level object, last first: when the text read off the
-  // page also holds the prompt (and its INPUT JSON), the answer is the last.
-  candidates.push(...topLevelObjects(answer).reverse());
-  const start = answer.indexOf('{');
-  const end = answer.lastIndexOf('}');
-  if (start >= 0 && end > start) candidates.push(answer.slice(start, end + 1));
-
-  for (const candidate of candidates) {
-    if (!candidate?.trim()) continue;
-    for (const text of [candidate, repair(candidate)]) {
-      try {
-        const parsed = JSON.parse(text);
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
-      } catch {
-        // Next.
-      }
-    }
-  }
-  throw new BadGatewayError(
-    `ChatGPT's answer was not valid JSON. It began: "${answer.slice(0, 160).replace(/\s+/g, ' ')}…"`,
-  );
-}
-
-function repair(text: string): string {
-  return text
-    .replace(/^\uFEFF/, '')
-    .replace(/[\u201C\u201D]/g, '"')
-    .replace(/,\s*([}\]])/g, '$1');
-}
+export { parseJsonAnswer };

@@ -1,19 +1,11 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Actor } from '../auth/actor.js';
-import * as bidsService from '../bids/bids.service.js';
 import type { Bid } from '../domain/types.js';
-import { BadGatewayError, BadRequestError } from '../http/errors.js';
-import { toMarkdown } from '../jobs/markdown.js';
-import * as profileService from '../profile/profile.service.js';
-import { convertDocxToPdf, processMakerJson, renderStructuredWithMaker } from '../resume/maker/maker.service.js';
-import { AiResumeSchema } from '../resume/resume.schemas.js';
-import { CoverLetterPayloadSchema, type CoverLetterPayload } from '../cover-letter/cover-letter.schemas.js';
-import { renderCoverLetter } from '../cover-letter/cover-letter.service.js';
-import { settingsForMake } from '../profiles/profile-prompts.service.js';
 import { logger } from '../logger.js';
-import { askChatGpt, parseJsonAnswer } from './chatgpt-web.js';
+import { askChatGpt } from './chatgpt-web.js';
 import { autoMakeEnabled } from './auto-make-state.js';
+import { finishCoverLetter, finishResume, prepareMake, type MadeFile } from './make-steps.js';
 
 /**
  * The Applications table's "Make": one application's Resume written by
@@ -34,11 +26,8 @@ import { autoMakeEnabled } from './auto-make-state.js';
  *     job description (.txt), Resume (.pdf, .docx), cover letter (.pdf, .docx)
  */
 
-export interface MadeFile {
-  name: string;
-  /** Base64 of the bytes, for the browser to write to disk. */
-  base64: string;
-}
+export type { MadeFile } from './make-steps.js';
+export { applicationFolderName } from './make-steps.js';
 
 export interface MadeResume {
   bid: Bid;
@@ -60,32 +49,6 @@ export interface MadeResume {
   savedTo?: string;
   /** Why the API could not write them there. */
   saveError?: string;
-}
-
-const UNSAFE = /[\\/:*?"<>|#%]+/g;
-
-/** "Latent AI", "AI Engineer" → "Latent_Ai_Ai_Engineer" — the Resume Builder's folder names. */
-export function applicationFolderName(company: string, role: string): string {
-  return (
-    `${company} ${role}`
-      .replace(UNSAFE, ' ')
-      .split(/\s+/)
-      .filter(Boolean)
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-      .join('_')
-      .replace(/[. ]+$/, '') || 'Application'
-  );
-}
-
-/** "Jonathan", "Bai", "Latent AI" → "Jonathan_Bai_Latent_AI" — the Resume Builder's file stems. */
-function fileStem(...parts: string[]): string {
-  return parts
-    .join(' ')
-    .replace(UNSAFE, ' ')
-    .split(/\s+/)
-    .filter(Boolean)
-    .join('_')
-    .replace(/[._]+$/, '');
 }
 
 /** Makes in flight, by application: a click during an automatic Make joins it rather than asking twice. */
@@ -117,135 +80,40 @@ export function autoMakeNewApplication(actor: Actor, bid: Bid): void {
   void autoMakeEnabled()
     .then((enabled) => (enabled ? makeResumeWithChatGpt(actor, bid.id) : null))
     .then(
-    (made) => {
-      if (!made) return;
-      logger.info(
-        { bidId: bid.id, savedTo: made.savedTo, saveError: made.saveError, coverLetterError: made.coverLetterError },
-        'Auto Make finished',
-      );
-    },
-    (error) => logger.error({ err: error, bidId: bid.id }, 'Auto Make failed'),
-  );
+      (made) => {
+        if (!made) return;
+        logger.info(
+          { bidId: bid.id, savedTo: made.savedTo, saveError: made.saveError, coverLetterError: made.coverLetterError },
+          'Auto Make finished',
+        );
+      },
+      (error) => logger.error({ err: error, bidId: bid.id }, 'Auto Make failed'),
+    );
 }
 
+/** The two chats in this computer's ChatGPT window, around the shared steps (`make-steps.ts`). */
 async function make(actor: Actor, bidId: string): Promise<MadeResume> {
-  const bid = await bidsService.getBid(actor, bidId);
-  if (bid.status === 'Skip') {
-    throw new BadRequestError('This application is marked Skip, so no Resume or cover letter is made for it.');
-  }
-  const description = bid.jobDescription?.trim();
-  if (!description) {
-    throw new BadRequestError('This application has no job description. Add one, then click Make again.');
-  }
-  const jobDescription = toMarkdown(description).markdown || description;
+  const job = await prepareMake(actor, bidId);
+  const resume = await finishResume(job, await askChatGpt(job.resumeMessage));
+  let bid = resume.bid;
+  const files: MadeResume['files'] = { ...resume.files };
 
-  const ownerId = bid.candidate?.userId ?? actor.id;
-  const profile = bid.candidate?.profileId
-    ? await profileService.getProfileById(bid.candidate.profileId)
-    : await profileService.getProfile(ownerId);
-  // The Profile's own Resume prompt and template (Profiles → Prompts &
-  // Template) are required: no ChatGPT call for a Profile missing either. The
-  // cover letter prompt falls back to the simple one.
-  const prompts = await settingsForMake({ profileId: bid.candidate?.profileId, ownerUserId: ownerId });
-
-  const input = JSON.stringify(
-    { target_company: bid.company, target_role: bid.role, job_description: jobDescription },
-    null,
-    2,
-  );
-  const message = [
-    prompts.resumePrompt,
-    '',
-    '================================================================================',
-    'INPUT',
-    '================================================================================',
-    input,
-    '',
-    'Reply with the JSON only, in a single ```json code block.',
-  ].join('\n');
-
-  const json = parseJsonAnswer(await askChatGpt(message));
-
-  // The app's own prompt answers in its structured shape; a Resume Maker
-  // prompt (P.txt) in Maker JSON. Both go into the same Word template.
-  const templateId = prompts.templateId;
-  const name = [profile.firstName, profile.lastName].filter(Boolean).join(' ').trim();
-  const structured = AiResumeSchema.safeParse(json);
-  let docx: Buffer;
-  try {
-    docx = structured.success
-      ? (
-          await renderStructuredWithMaker({
-            document: structured.data,
-            format: 'docx',
-            name: name || undefined,
-            fallbackCompanies: profile.workExperience.map((entry) => entry.company),
-            templateId,
-          })
-        ).file
-      : (await processMakerJson({ json: json as object, format: 'docx', templateId })).file;
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    // The database dropping out is not the answer's fault: passed on as it is.
-    if (/Connection terminated|ECONNRESET|ETIMEDOUT|connection timeout|Can't reach database/i.test(reason)) throw error;
-    throw new BadGatewayError(`ChatGPT answered, but its JSON did not fit the Resume template: ${reason}`);
-  }
-  const pdf = await convertDocxToPdf(docx);
-
-  const firstName = profile.firstName || bid.candidate?.firstName || '';
-  const lastName = profile.lastName || bid.candidate?.lastName || '';
-  const stem = fileStem(firstName, lastName, bid.company) || 'Resume';
-  const pdfName = `${stem}_resume.pdf`;
-  const docxName = `${stem}_resume.docx`;
-
-  let updated = await bidsService.replaceResumeFiles(actor, bid.id, [
-    { format: 'pdf', name: pdfName, contentType: 'application/pdf', data: pdf },
-    {
-      format: 'docx',
-      name: docxName,
-      contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      data: docx,
-    },
-  ]);
-
-  const files: MadeResume['files'] = {
-    pdf: { name: pdfName, base64: pdf.toString('base64') },
-    docx: { name: docxName, base64: docx.toString('base64') },
-    jobDescription: {
-      name: `${stem}_job_description.txt`,
-      base64: Buffer.from(jobDescription, 'utf8').toString('base64'),
-    },
-  };
-
-  // The cover letter is the second half: written from the Resume just made.
-  // A failure here keeps the Resume — it is reported, not thrown.
+  // The cover letter is the second half: written from the Resume just made. A
+  // failure here keeps the Resume; it is tried once more (a slow page load is
+  // the usual cause), then reported rather than thrown.
   let coverLetterError: string | undefined;
-  try {
-    const letter = await makeCoverLetter({
-      bid,
-      jobDescription,
-      resume: json,
-      instructions: prompts.coverLetterPrompt,
-    });
-    const ownerUserId = bid.candidate?.userId ?? actor.id;
-    const [letterPdf, letterDocx] = await Promise.all(
-      (['pdf', 'docx'] as const).map((format) =>
-        renderCoverLetter(
-          ownerUserId,
-          { document: letter, format },
-          { date: bid.bidDate, profileId: bid.candidate?.profileId },
-        ),
-      ),
-    );
-    updated = await bidsService.setBidCoverLetter(actor, bid.id, letter);
-    files.coverLetterPdf = { name: `${stem}_cover_letter.pdf`, base64: letterPdf!.file.toString('base64') };
-    files.coverLetterDocx = { name: `${stem}_cover_letter.docx`, base64: letterDocx!.file.toString('base64') };
-  } catch (error) {
-    coverLetterError = error instanceof Error ? error.message : String(error);
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const letter = await finishCoverLetter(job, await askChatGpt(resume.coverLetterMessage));
+      bid = letter.bid;
+      Object.assign(files, letter.files);
+      coverLetterError = undefined;
+      break;
+    } catch (error) {
+      coverLetterError = error instanceof Error ? error.message : String(error);
+      logger.warn({ bidId, attempt, reason: coverLetterError }, 'Cover letter failed');
+    }
   }
-
-  const profileFolderName = fileStem(firstName, lastName) || 'Profile';
-  const folderName = applicationFolderName(bid.company, bid.role);
 
   // With RESUME_SAVE_DIR set, the API writes the files itself — what lets a
   // Make nobody clicked (a new application from the form or the scraper
@@ -255,7 +123,7 @@ async function make(actor: Actor, bidId: string): Promise<MadeResume> {
   let saveError: string | undefined;
   const saveRoot = resumeSaveDir();
   if (saveRoot) {
-    const directory = path.win32.join(saveRoot, profileFolderName, folderName);
+    const directory = path.win32.join(saveRoot, job.profileFolderName, job.folderName);
     try {
       await mkdir(directory, { recursive: true });
       for (const file of Object.values(files)) {
@@ -268,9 +136,9 @@ async function make(actor: Actor, bidId: string): Promise<MadeResume> {
   }
 
   return {
-    bid: updated,
-    profileFolderName,
-    folderName,
+    bid,
+    profileFolderName: job.profileFolderName,
+    folderName: job.folderName,
     files,
     ...(coverLetterError ? { coverLetterError } : {}),
     ...(savedTo ? { savedTo } : {}),
@@ -282,63 +150,4 @@ async function make(actor: Actor, bidId: string): Promise<MadeResume> {
 export function resumeSaveDir(): string | null {
   const directory = process.env.RESUME_SAVE_DIR?.trim();
   return directory && path.win32.isAbsolute(directory) ? directory : null;
-}
-
-/** The JSON shape the letter template needs — asked for whatever the Profile's prompt says. */
-const COVER_LETTER_SHAPE = `Reply with JSON only, in a single json code block, exactly in this shape:
-{"company": "<company>", "role": "<role>", "greeting": "Dear Hiring Manager,", "paragraphs": ["<paragraph 1>", "<paragraph 2>", "<paragraph 3>"], "closing": "Sincerely,"}`;
-
-async function makeCoverLetter(input: {
-  bid: Bid;
-  jobDescription: string;
-  resume: unknown;
-  instructions: string;
-}): Promise<CoverLetterPayload> {
-  // The Resume as ChatGPT wrote it, minus the posting it already echoes and
-  // the template's highlight markup.
-  const resume = { ...(input.resume as Record<string, unknown>) };
-  delete resume.job_description;
-  delete resume.jobDescription;
-  const resumeText = JSON.stringify(resume, null, 2).replace(/\[([^\]]+)\]\[highlight\]/gi, '$1');
-
-  const message = [
-    input.instructions,
-    '',
-    COVER_LETTER_SHAPE,
-    '',
-    `COMPANY: ${input.bid.company}`,
-    `ROLE: ${input.bid.role}`,
-    '',
-    'JOB DESCRIPTION:',
-    input.jobDescription,
-    '',
-    'MY RESUME (JSON):',
-    resumeText,
-  ].join('\n');
-
-  return toCoverLetter(parseJsonAnswer(await askChatGpt(message)), input.bid);
-}
-
-/** ChatGPT's answer as the letter template's payload, forgiving the usual near misses. */
-function toCoverLetter(answer: unknown, bid: Bid): CoverLetterPayload {
-  const parsed = CoverLetterPayloadSchema.safeParse(answer);
-  if (parsed.success && parsed.data.paragraphs.length > 0) return parsed.data;
-
-  const raw = (answer ?? {}) as Record<string, unknown>;
-  const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
-  let paragraphs = Array.isArray(raw.paragraphs) ? raw.paragraphs.map(text).filter(Boolean) : [];
-  if (paragraphs.length === 0) {
-    const body = text(raw.body) || text(raw.cover_letter) || text(raw.coverLetter) || text(raw.letter) || text(raw.text);
-    paragraphs = body.split(/\n\s*\n/).map((p) => p.replace(/\s*\n\s*/g, ' ').trim()).filter(Boolean);
-  }
-  if (paragraphs.length === 0) {
-    throw new BadGatewayError("ChatGPT's cover letter answer had no paragraphs.");
-  }
-  return {
-    company: text(raw.company) || bid.company,
-    role: text(raw.role) || bid.role,
-    greeting: text(raw.greeting) || 'Dear Hiring Manager,',
-    paragraphs,
-    closing: text(raw.closing) || 'Sincerely,',
-  };
 }

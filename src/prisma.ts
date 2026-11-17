@@ -12,7 +12,10 @@ const adapter = new PrismaPg({
   // and every instance opens its own pool — ten connections apiece exhausts
   // Postgres under a modest spike. One per instance, with a pooler
   // (PgBouncer/Neon/Supabase) doing the fan-in, is the shape that survives.
-  max: process.env.VERCEL ? 1 : 10,
+  // Locally, a few: Supabase's session pooler allows 15 clients in all, shared
+  // with every Vercel instance and any other local API — ten here alone ran it
+  // out ("max clients reached in session mode"). DATABASE_POOL_MAX overrides.
+  max: process.env.VERCEL ? 1 : Number(process.env.DATABASE_POOL_MAX) || 3,
   // A connection the pooler or the network dropped is noticed and replaced,
   // rather than handed to the next query ("Connection terminated unexpectedly")
   // — which a long-running local API, waiting minutes on ChatGPT, runs into.

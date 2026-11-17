@@ -6,6 +6,20 @@ import { env } from './env.js';
  * Prisma 7 connects through a driver adapter rather than an engine-owned pool,
  * so the connection string lives here rather than in `schema.prisma`.
  */
+/**
+ * Supabase's transaction pooler (port 6543) lends a server connection only for
+ * the length of each transaction and takes hundreds of clients, so a few
+ * connections per serverless instance cost nothing there; the session pooler
+ * (5432) gives every client a seat of 15 in all, so one each is the most.
+ */
+const viaTransactionPooler = (() => {
+  try {
+    return new URL(env.DATABASE_URL).port === '6543';
+  } catch {
+    return false;
+  }
+})();
+
 const adapter = new PrismaPg({
   connectionString: env.DATABASE_URL,
   // On Vercel each concurrent request can land in its own function instance,
@@ -15,7 +29,7 @@ const adapter = new PrismaPg({
   // Locally, a few: Supabase's session pooler allows 15 clients in all, shared
   // with every Vercel instance and any other local API — ten here alone ran it
   // out ("max clients reached in session mode"). DATABASE_POOL_MAX overrides.
-  max: process.env.VERCEL ? 1 : Number(process.env.DATABASE_POOL_MAX) || 3,
+  max: Number(process.env.DATABASE_POOL_MAX) || (process.env.VERCEL ? (viaTransactionPooler ? 5 : 1) : 3),
   // A connection the pooler or the network dropped is noticed and replaced,
   // rather than handed to the next query ("Connection terminated unexpectedly")
   // — which a long-running local API, waiting minutes on ChatGPT, runs into.
@@ -24,6 +38,9 @@ const adapter = new PrismaPg({
 
 export const prisma = new PrismaClient({
   adapter,
+  // Waiting for a connection: Prisma's default of 2s failed whole requests
+  // whenever a few arrived together on an instance with one connection.
+  transactionOptions: { maxWait: 15_000, timeout: 20_000 },
   log: env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
 });
 

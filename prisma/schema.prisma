@@ -462,6 +462,12 @@ model Profile {
   resumePrompt      String?
   coverLetterPrompt String?
 
+  /// Jobs the scraper extension does not save for this Profile: a job title
+  /// containing any of these roles, or a company whose name contains any of
+  /// these names (whole words, any case). Edited in Edit Profile → Avoid.
+  avoidRoles     String[] @default([])
+  avoidCompanies String[] @default([])
+
   /// Legacy free-text place line kept for Resume templates; prefer structured address fields.
   location String @default("")
 

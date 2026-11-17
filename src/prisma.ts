@@ -13,6 +13,10 @@ const adapter = new PrismaPg({
   // Postgres under a modest spike. One per instance, with a pooler
   // (PgBouncer/Neon/Supabase) doing the fan-in, is the shape that survives.
   max: process.env.VERCEL ? 1 : 10,
+  // A connection the pooler or the network dropped is noticed and replaced,
+  // rather than handed to the next query ("Connection terminated unexpectedly")
+  // — which a long-running local API, waiting minutes on ChatGPT, runs into.
+  keepAlive: true,
 });
 
 export const prisma = new PrismaClient({

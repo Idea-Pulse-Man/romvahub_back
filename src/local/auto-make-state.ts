@@ -6,7 +6,8 @@ import { prisma } from '../prisma.js';
 import { retryAllNow } from './auto-make-queue.js';
 
 /**
- * The automatic Resume maker's Start / Stop switch and its status — shared
+ * The two switches on romva.space — Start resume / Stop (the automatic Resume
+ * maker) and Start apply / Stop (the desktop agents' Apply) — and the maker's status — shared
  * through the database between romva.space (the button, served by the deployed
  * API) and the computer that runs the maker (`auto-make-watcher.ts`).
  */
@@ -15,7 +16,10 @@ import { retryAllNow } from './auto-make-queue.js';
 const ONLINE_WITHIN_MS = 2 * 60_000;
 
 export interface AutoMakeStatus {
+  /** Start resume / Stop: the workers make Resumes and cover letters. */
   enabled: boolean;
+  /** Start apply / Stop: the desktop agents open and fill in application forms. */
+  applyEnabled: boolean;
   /** Whether the maker (the computer with the ChatGPT window) checked in recently. */
   workerOnline: boolean;
   workerSeenAt: string | null;
@@ -38,6 +42,7 @@ export async function getAutoMakeStatus(): Promise<AutoMakeStatus> {
   const online = !!state.workerSeenAt && Date.now() - state.workerSeenAt.getTime() < ONLINE_WITHIN_MS;
   return {
     enabled: state.enabled,
+    applyEnabled: state.applyEnabled,
     workerOnline: online,
     workerSeenAt: state.workerSeenAt?.toISOString() ?? null,
     current: online && state.currentBidId ? { bidId: state.currentBidId, company: state.currentCompany } : null,
@@ -45,11 +50,12 @@ export async function getAutoMakeStatus(): Promise<AutoMakeStatus> {
   };
 }
 
-export async function setAutoMakeEnabled(enabled: boolean): Promise<AutoMakeStatus> {
-  await prisma.autoMakeState.upsert({ where: { id: 1 }, create: { id: 1, enabled }, update: { enabled } });
-  // Start: everything missing a Resume or a cover letter is tried again now,
-  // earlier failures included.
-  if (enabled) await retryAllNow();
+/** Either switch, or both; one left out keeps its value. */
+export async function setSwitches(next: { enabled?: boolean; applyEnabled?: boolean }): Promise<AutoMakeStatus> {
+  await prisma.autoMakeState.upsert({ where: { id: 1 }, create: { id: 1, ...next }, update: next });
+  // Start resume: everything missing a Resume or a cover letter is tried again
+  // now, earlier failures included.
+  if (next.enabled) await retryAllNow();
   return getAutoMakeStatus();
 }
 
@@ -68,7 +74,11 @@ export async function reportWorker(report: {
   await prisma.autoMakeState.upsert({ where: { id: 1 }, create: { id: 1, ...data }, update: data });
 }
 
-const SetAutoMakeSchema = z.object({ enabled: z.boolean() });
+const SetAutoMakeSchema = z
+  .object({ enabled: z.boolean().optional(), applyEnabled: z.boolean().optional() })
+  .refine((body) => body.enabled !== undefined || body.applyEnabled !== undefined, {
+    message: 'Send enabled, applyEnabled, or both.',
+  });
 
 export const autoMakeRouter: Router = Router();
 autoMakeRouter.use(requireAuth);
@@ -78,6 +88,6 @@ autoMakeRouter.get('/', async (_req, res) => {
 });
 
 autoMakeRouter.put('/', validate({ body: SetAutoMakeSchema }), async (req, res) => {
-  const { enabled } = (req as ValidatedRequest<z.infer<typeof SetAutoMakeSchema>>).valid.body;
-  res.json(await setAutoMakeEnabled(enabled));
+  const body = (req as ValidatedRequest<z.infer<typeof SetAutoMakeSchema>>).valid.body;
+  res.json(await setSwitches(body));
 });

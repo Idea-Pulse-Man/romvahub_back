@@ -664,6 +664,9 @@ model Settings {
 model AutoMakeState {
   id      Int     @id @default(1)
   enabled Boolean @default(false)
+  /// Start apply / Stop on romva.space: whether the desktop agents open and
+  /// fill in application forms (the person still submits each one).
+  applyEnabled Boolean @default(false)
 
   /// The maker's last check-in. Older than a couple of minutes: not running.
   workerSeenAt     DateTime?

@@ -20,7 +20,10 @@ import { fileStem } from './make-steps.js';
  *
  *   GET /api/auto-make/apply/next?limit=3&skip=<ids>  → applications ready to apply to
  *   GET /api/auto-make/apply/:bidId                   → what to fill in: the applicant,
- *                                                        the Resume and cover letter files
+ *                                                        the Resume and cover letter files,
+ *                                                        and the job post and Resume text
+ *                                                        (for the agent's ChatGPT answers
+ *                                                        to the form's own questions)
  *
  * Ready: a Draft with a job link, its Resume and its cover letter made.
  */
@@ -95,6 +98,7 @@ autoApplyRouter.get('/apply/:bidId', validate({ params: BidParamsSchema }), asyn
     : await profileService.getProfile(ownerUserId);
 
   const resumePdf = await bidsService.getResumeFile(actor, bid.id, 'pdf');
+  const made = await prisma.bid.findUnique({ where: { id: bid.id }, select: { resumeDocument: true } });
   const letterRaw = await bidsService.getBidCoverLetter(actor, bid.id);
   const letter = CoverLetterPayloadSchema.safeParse(letterRaw);
 
@@ -154,6 +158,8 @@ autoApplyRouter.get('/apply/:bidId', validate({ params: BidParamsSchema }), asyn
     },
     resume: resumePdf ? { name: `${stem}_Resume.pdf`, base64: resumePdf.data.toString('base64') } : null,
     coverLetter: coverLetterPdf,
+    jobDescription: (bid.jobDescription ?? '').slice(0, 20_000),
+    resumeText: made?.resumeDocument ? JSON.stringify(made.resumeDocument).slice(0, 20_000) : '',
     coverLetterText: letter.success
       ? [letter.data.greeting, ...letter.data.paragraphs, letter.data.closing, fullName].filter(Boolean).join('\n\n')
       : '',

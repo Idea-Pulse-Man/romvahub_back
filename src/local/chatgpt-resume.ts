@@ -186,6 +186,8 @@ async function make(actor: Actor, bidId: string): Promise<MadeResume> {
       : (await processMakerJson({ json: json as object, format: 'docx', templateId })).file;
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
+    // The database dropping out is not the answer's fault: passed on as it is.
+    if (/Connection terminated|ECONNRESET|ETIMEDOUT|connection timeout|Can't reach database/i.test(reason)) throw error;
     throw new BadGatewayError(`ChatGPT answered, but its JSON did not fit the Resume template: ${reason}`);
   }
   const pdf = await convertDocxToPdf(docx);

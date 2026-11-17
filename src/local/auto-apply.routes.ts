@@ -11,6 +11,7 @@ import { validate, type ValidatedRequest } from '../http/validate.js';
 import { prisma } from '../prisma.js';
 import { Prisma as PrismaTypes } from '../generated/prisma/client.js';
 import * as profileService from '../profile/profile.service.js';
+import { currentJob } from './current-job.js';
 import { fileStem } from './make-steps.js';
 
 /**
@@ -99,6 +100,8 @@ autoApplyRouter.get('/apply/:bidId', validate({ params: BidParamsSchema }), asyn
 
   const resumePdf = await bidsService.getResumeFile(actor, bid.id, 'pdf');
   const made = await prisma.bid.findUnique({ where: { id: bid.id }, select: { resumeDocument: true } });
+  // The same current job, under the same title, as the Resume attached to the form.
+  const current = currentJob(profile.workExperience, made?.resumeDocument);
   const letterRaw = await bidsService.getBidCoverLetter(actor, bid.id);
   const letter = CoverLetterPayloadSchema.safeParse(letterRaw);
 
@@ -106,11 +109,6 @@ autoApplyRouter.get('/apply/:bidId', validate({ params: BidParamsSchema }), asyn
   const lastName = (profile.hasPreferredName && profile.preferredLastName) || profile.lastName;
   const fullName = [firstName, lastName].filter(Boolean).join(' ');
   const stem = fileStem(profile.firstName, profile.lastName) || 'Resume';
-  // The current job: no end date, else the one that started last.
-  const latest = [...(profile.workExperience ?? [])].sort((x, y) => {
-    if (!x.endDate !== !y.endDate) return x.endDate ? 1 : -1;
-    return String(y.startDate).localeCompare(String(x.startDate));
-  })[0];
 
   let coverLetterPdf: { name: string; base64: string } | null = null;
   if (letter.success) {
@@ -146,8 +144,8 @@ autoApplyRouter.get('/apply/:bidId', validate({ params: BidParamsSchema }), asyn
       state: profile.state,
       zipCode: profile.zipCode,
       country: profile.country,
-      currentCompany: latest?.company ?? '',
-      currentTitle: latest?.title ?? '',
+      currentCompany: current.company,
+      currentTitle: current.title,
       authorizedCountries: profile.authorizedCountries,
       openToRelocation: profile.openToRelocation,
       noticePeriod: profile.noticePeriod,

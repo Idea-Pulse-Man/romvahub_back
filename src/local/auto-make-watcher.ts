@@ -1,7 +1,7 @@
 import type { Actor } from '../auth/actor.js';
 import { ServiceUnavailableError } from '../http/errors.js';
 import { logger } from '../logger.js';
-import { makeResumeWithChatGpt } from './chatgpt-resume.js';
+import { makeCoverLetterOnly, makeResumeWithChatGpt } from './chatgpt-resume.js';
 import { claimNext, completeClaim, releaseClaim } from './auto-make-queue.js';
 import { chatGptReady } from './chatgpt-web.js';
 import { autoMakeEnabled, reportWorker } from './auto-make-state.js';
@@ -80,8 +80,14 @@ async function tick(): Promise<void> {
         await reportWorker({ current: null, waitingReason: null });
         return;
       }
-      // Every application, whoever's: this computer works for them all.
-      const next = await claimNext({}, WORKER);
+      // Every application, whoever's: this computer works for them all. New
+      // Resumes first; then any stored Resume whose cover letter is missing.
+      let letterOnly = false;
+      let next = await claimNext({}, WORKER);
+      if (!next) {
+        next = await claimNext({}, WORKER, { letterOnly: true });
+        letterOnly = !!next;
+      }
       if (!next) {
         await reportWorker({ current: null, waitingReason: null });
         return;
@@ -90,11 +96,24 @@ async function tick(): Promise<void> {
       // The application's owner, so the Make sees exactly what they would.
       const actor: Actor = { id: next.userId, role: next.user.role === 'ADMIN' ? 'admin' : 'user' };
       if (!waitingForChatGpt) {
-        logger.info({ bidId: next.id, number: next.number, company: next.company }, 'Auto Make: starting');
+        logger.info({ bidId: next.id, number: next.number, company: next.company, letterOnly }, 'Auto Make: starting');
       }
       try {
+        if (letterOnly) {
+          const letter = await makeCoverLetterOnly(actor, next.id);
+          await completeClaim(next.id);
+          logger.info({ bidId: next.id, company: next.company, savedTo: letter.savedTo }, 'Auto Make: cover letter added');
+          waitingForChatGpt = false;
+          continue;
+        }
         const made = await makeResumeWithChatGpt(actor, next.id);
-        await completeClaim(next.id);
+        // The letter failed even after its retry: counted, so it is tried
+        // again later on its own (letter-only), not left missing for good.
+        if (made.coverLetterError) {
+          await releaseClaim(next.id, { failed: true, error: `Cover letter: ${made.coverLetterError}` });
+        } else {
+          await completeClaim(next.id);
+        }
         logger.info(
           { bidId: next.id, savedTo: made.savedTo, saveError: made.saveError, coverLetterError: made.coverLetterError },
           'Auto Make finished',

@@ -5,7 +5,13 @@ import type { Bid } from '../domain/types.js';
 import { logger } from '../logger.js';
 import { askChatGpt } from './chatgpt-web.js';
 import { autoMakeEnabled } from './auto-make-state.js';
-import { finishCoverLetter, finishResume, prepareMake, type MadeFile } from './make-steps.js';
+import {
+  coverLetterMessageFromStoredResume,
+  finishCoverLetter,
+  finishResume,
+  prepareMake,
+  type MadeFile,
+} from './make-steps.js';
 
 /**
  * The Applications table's "Make": one application's Resume written by
@@ -144,6 +150,24 @@ async function make(actor: Actor, bidId: string): Promise<MadeResume> {
     ...(savedTo ? { savedTo } : {}),
     ...(saveError ? { saveError } : {}),
   };
+}
+
+/**
+ * Just the cover letter, for an application whose Resume is stored but whose
+ * letter failed: written from the stored Resume's text, then saved next to
+ * the Resume in the save folder.
+ */
+export async function makeCoverLetterOnly(actor: Actor, bidId: string): Promise<{ savedTo?: string }> {
+  const job = await prepareMake(actor, bidId);
+  const letter = await finishCoverLetter(job, await askChatGpt(await coverLetterMessageFromStoredResume(job)));
+  const saveRoot = resumeSaveDir();
+  if (!saveRoot) return {};
+  const directory = path.win32.join(saveRoot, job.profileFolderName, job.folderName);
+  await mkdir(directory, { recursive: true });
+  for (const file of Object.values(letter.files)) {
+    await writeFile(path.win32.join(directory, file.name), Buffer.from(file.base64, 'base64'));
+  }
+  return { savedTo: directory };
 }
 
 /** The Resume save folder the API writes into itself (`RESUME_SAVE_DIR`), when one is set. */

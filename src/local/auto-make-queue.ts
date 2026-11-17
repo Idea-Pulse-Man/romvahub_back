@@ -21,8 +21,12 @@ const LOOKBACK_DAYS = Number(process.env.CHATGPT_AUTO_MAKE_DAYS) || 7;
 
 const NOW_UTC = PrismaTypes.sql`(now() at time zone 'utc')`;
 
-/** The applications in `scope` waiting for a Resume, oldest first, not held by anyone and not cooling down. */
-async function waiting(scope: PrismaTypes.BidWhereInput, take: number) {
+/**
+ * The applications in `scope` waiting, oldest first, not held by anyone and
+ * not cooling down: for a Resume (and its letter), or — `letterOnly` — for
+ * just the cover letter, when the Resume is stored but its letter failed.
+ */
+async function waiting(scope: PrismaTypes.BidWhereInput, take: number, letterOnly = false) {
   const now = Date.now();
   const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000);
   return prisma.bid.findMany({
@@ -34,8 +38,9 @@ async function waiting(scope: PrismaTypes.BidWhereInput, take: number) {
           createdAt: { gte: new Date(now - LOOKBACK_DAYS * 24 * 60 * 60_000) },
           jobDescription: { not: null },
           NOT: [{ jobDescription: '' }],
-          resumeDocument: { equals: PrismaTypes.AnyNull },
-          resumeFiles: { none: {} },
+          ...(letterOnly
+            ? { resumeFiles: { some: {} }, coverLetterDocument: { equals: PrismaTypes.AnyNull } }
+            : { resumeDocument: { equals: PrismaTypes.AnyNull }, resumeFiles: { none: {} } }),
           OR: [
             { autoMakeClaim: null },
             {
@@ -69,8 +74,12 @@ export type ClaimedApplication = Awaited<ReturnType<typeof waiting>>[number];
  * null when there is none. Two workers asking at once never get the same one:
  * the row is written only when it is free (or its holder went quiet).
  */
-export async function claimNext(scope: PrismaTypes.BidWhereInput, worker: string): Promise<ClaimedApplication | null> {
-  for (const candidate of await waiting(scope, 5)) {
+export async function claimNext(
+  scope: PrismaTypes.BidWhereInput,
+  worker: string,
+  { letterOnly = false }: { letterOnly?: boolean } = {},
+): Promise<ClaimedApplication | null> {
+  for (const candidate of await waiting(scope, 5, letterOnly)) {
     const taken = await prisma.$queryRaw<{ bidId: string }[]>`
       INSERT INTO "auto_make_claims" ("bidId", "worker", "claimedAt", "updatedAt")
       VALUES (${candidate.id}::uuid, ${worker}, ${NOW_UTC}, ${NOW_UTC})

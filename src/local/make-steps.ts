@@ -9,6 +9,7 @@ import { AiResumeSchema } from '../resume/resume.schemas.js';
 import { CoverLetterPayloadSchema, type CoverLetterPayload } from '../cover-letter/cover-letter.schemas.js';
 import { renderCoverLetter } from '../cover-letter/cover-letter.service.js';
 import { settingsForMake } from '../profiles/profile-prompts.service.js';
+import mammoth from 'mammoth';
 import { parseJsonAnswer } from './json-answer.js';
 
 /**
@@ -209,7 +210,24 @@ export function coverLetterMessage(job: MakeJob, resume: unknown): string {
   delete copy.job_description;
   delete copy.jobDescription;
   const resumeText = JSON.stringify(copy, null, 2).replace(/\[([^\]]+)\]\[highlight\]/gi, '$1');
+  return letterMessage(job, 'MY RESUME (JSON):', resumeText);
+}
 
+/**
+ * The second chat for an application whose Resume is already stored but whose
+ * cover letter is missing (its letter failed after the Resume was made): the
+ * Resume's text, read from the stored Word file, stands in for ChatGPT's JSON.
+ */
+export async function coverLetterMessageFromStoredResume(job: MakeJob): Promise<string> {
+  const docx = await bidsService.getResumeFile(job.actor, job.bid.id, 'docx');
+  if (!docx) throw new BadRequestError('This application has no stored Resume to write the cover letter from.');
+  const { value } = await mammoth.extractRawText({ buffer: docx.data });
+  const resumeText = value.replace(/\n{3,}/g, '\n\n').trim();
+  if (!resumeText) throw new BadRequestError('The stored Resume has no text to write the cover letter from.');
+  return letterMessage(job, 'MY RESUME:', resumeText);
+}
+
+function letterMessage(job: MakeJob, resumeHeading: string, resumeText: string): string {
   return [
     job.prompts.coverLetterPrompt,
     '',
@@ -221,7 +239,7 @@ export function coverLetterMessage(job: MakeJob, resume: unknown): string {
     'JOB DESCRIPTION:',
     job.jobDescription,
     '',
-    'MY RESUME (JSON):',
+    resumeHeading,
     resumeText,
   ].join('\n');
 }

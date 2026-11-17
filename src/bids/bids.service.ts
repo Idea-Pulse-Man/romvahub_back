@@ -331,7 +331,12 @@ export async function listBidsPage(actor: Actor, query: ListBidsQuery): Promise<
   const pageSize = query.pageSize ?? DEFAULT_PAGE_SIZE;
   const where = await listWhere(actor, query);
 
-  const [total, rows] = await prisma.$transaction([
+  // Two plain reads rather than one transaction: a transaction needs a
+  // connection of its own within Prisma's wait, and a burst of list requests
+  // on one serverless instance (one connection) failed waiting for it ("Unable
+  // to start a transaction in the given time"). A row added or removed between
+  // the two reads is put right by the next refresh.
+  const [total, rows] = await Promise.all([
     prisma.bid.count({ where }),
     prisma.bid.findMany({
       where,

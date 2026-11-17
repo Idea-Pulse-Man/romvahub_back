@@ -108,7 +108,9 @@ autoApplyRouter.get('/apply/:bidId', validate({ params: BidParamsSchema }), asyn
   const firstName = (profile.hasPreferredName && profile.preferredFirstName) || profile.firstName;
   const lastName = (profile.hasPreferredName && profile.preferredLastName) || profile.lastName;
   const fullName = [firstName, lastName].filter(Boolean).join(' ');
-  const stem = fileStem(profile.firstName, profile.lastName) || 'Resume';
+  // The same file names as the ones saved to the Resume folder ("Jonathan_Bai_Curai_Health_resume.pdf"),
+  // so the job site gets the file you would pick there yourself.
+  const stem = fileStem(profile.firstName, profile.lastName, bid.company) || 'Resume';
 
   let coverLetterPdf: { name: string; base64: string } | null = null;
   if (letter.success) {
@@ -118,7 +120,7 @@ autoApplyRouter.get('/apply/:bidId', validate({ params: BidParamsSchema }), asyn
         { document: letter.data, format: 'pdf' },
         { date: bid.bidDate, profileId: bid.candidate?.profileId },
       );
-      coverLetterPdf = { name: `${stem}_Cover_Letter.pdf`, base64: rendered.file.toString('base64') };
+      coverLetterPdf = { name: `${stem}_cover_letter.pdf`, base64: rendered.file.toString('base64') };
     } catch {
       coverLetterPdf = null; // The text is still offered for a cover letter box.
     }
@@ -154,7 +156,7 @@ autoApplyRouter.get('/apply/:bidId', validate({ params: BidParamsSchema }), asyn
       veteranStatus: profile.veteranStatus,
       disabilityStatus: profile.disabilityStatus,
     },
-    resume: resumePdf ? { name: `${stem}_Resume.pdf`, base64: resumePdf.data.toString('base64') } : null,
+    resume: resumePdf ? { name: resumePdf.name || `${stem}_resume.pdf`, base64: resumePdf.data.toString('base64') } : null,
     coverLetter: coverLetterPdf,
     jobDescription: (bid.jobDescription ?? '').slice(0, 20_000),
     resumeText: made?.resumeDocument ? JSON.stringify(made.resumeDocument).slice(0, 20_000) : '',

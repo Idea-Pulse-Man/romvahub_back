@@ -1,8 +1,9 @@
+import { hostname } from 'node:os';
 import type { Actor } from '../auth/actor.js';
 import { ServiceUnavailableError } from '../http/errors.js';
 import { logger } from '../logger.js';
 import { makeCoverLetterOnly, makeResumeWithChatGpt } from './chatgpt-resume.js';
-import { claimNext, completeClaim, releaseClaim } from './auto-make-queue.js';
+import { claimNext, completeClaim, releaseAllHeldBy, releaseClaim, retryAllNow } from './auto-make-queue.js';
 import { chatGptReady } from './chatgpt-web.js';
 import { autoMakeEnabled, reportWorker } from './auto-make-state.js';
 
@@ -36,11 +37,13 @@ function isDatabaseOutage(error: unknown): boolean {
 }
 
 /** This watcher's name in the queue. */
-const WORKER = 'local-api';
+const WORKER = `local-api · ${hostname()}`;
 
 /** Often enough that Start on romva.space takes effect in seconds, not a minute. */
 const POLL_MS = Number(process.env.CHATGPT_AUTO_MAKE_POLL_MS) || 15_000;
 let busy = false;
+/** The switch as last seen (null: not yet looked), to notice Start being pressed. */
+let wasEnabled: boolean | null = null;
 /** ChatGPT was unavailable on the last try: logged once, until a Make goes through. */
 let waitingForChatGpt = false;
 
@@ -55,7 +58,14 @@ export function startAutoMakeWatcher(): void {
     reportWorker({}).catch((error) => logger.warn({ err: error }, 'Auto Make could not check in'));
   }, 30_000);
   heartbeat.unref();
-  void tick();
+  // Whatever this computer's previous run was making when it stopped is free
+  // again at once, rather than after the 15-minute hold runs out.
+  void releaseAllHeldBy(WORKER)
+    .then((released) => {
+      if (released > 0) logger.info({ released }, 'Auto Make: released applications held by the previous run');
+    })
+    .catch((error) => logger.warn({ err: error }, 'Auto Make: could not release earlier holds'))
+    .finally(() => void tick());
 }
 
 async function tick(): Promise<void> {
@@ -64,10 +74,19 @@ async function tick(): Promise<void> {
   try {
     // Stopped on romva.space: check in (so the button knows this computer is
     // up) and do nothing else.
-    if (!(await autoMakeEnabled())) {
+    const enabled = await autoMakeEnabled();
+    if (!enabled) {
+      wasEnabled = false;
       await reportWorker({ current: null, waitingReason: null });
       return;
     }
+    // Start pressed since the last look: earlier failures are tried again now
+    // (also done by the API on Start; this covers an API that predates it).
+    if (wasEnabled === false) {
+      const reset = await retryAllNow();
+      if (reset > 0) logger.info({ reset }, 'Auto Make: Start — retrying earlier failures now');
+    }
+    wasEnabled = true;
     // Paused for ChatGPT: look at the window without reloading it (a reload
     // would throw away a sign-in in progress) and carry on once it is ready.
     if (waitingForChatGpt && !(await chatGptReady())) {

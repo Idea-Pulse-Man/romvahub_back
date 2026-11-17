@@ -34,6 +34,10 @@ const adapter = new PrismaPg({
   // rather than handed to the next query ("Connection terminated unexpectedly")
   // — which a long-running local API, waiting minutes on ChatGPT, runs into.
   keepAlive: true,
+  // Unused connections are closed here first, after a few seconds, so none is
+  // handed out after the pooler has already closed it ("Server has closed the
+  // connection") — the local API polls every 15s and sat on idle ones.
+  idleTimeoutMillis: 5_000,
 });
 
 export const prisma = new PrismaClient({

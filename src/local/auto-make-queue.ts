@@ -130,3 +130,26 @@ export async function releaseClaim(bidId: string, outcome: { failed: boolean; er
       WHERE "bidId" = ${bidId}::uuid`;
   }
 }
+
+/**
+ * Everything `worker` was holding, handed back uncounted — for a worker that
+ * has just started, whose previous run was stopped mid-application (a
+ * restart), so its applications need not wait out CLAIM_TTL.
+ */
+export async function releaseAllHeldBy(worker: string): Promise<number> {
+  return prisma.$executeRaw`
+    UPDATE "auto_make_claims" SET "claimedAt" = NULL, "updatedAt" = ${NOW_UTC}
+    WHERE ("worker" = ${worker} OR "worker" = 'local-api') AND "claimedAt" IS NOT NULL`;
+}
+
+/**
+ * Start pressed: every application that failed earlier is tried again now,
+ * not after its back-off — a Draft without a Resume gets one (and its cover
+ * letter), a stored Resume without a letter gets the letter. Applications a
+ * worker holds right now are left to it.
+ */
+export async function retryAllNow(): Promise<number> {
+  return prisma.$executeRaw`
+    UPDATE "auto_make_claims" SET "attempts" = 0, "failedAt" = NULL, "lastError" = NULL, "updatedAt" = ${NOW_UTC}
+    WHERE "claimedAt" IS NULL AND ("failedAt" IS NOT NULL OR "attempts" > 0)`;
+}

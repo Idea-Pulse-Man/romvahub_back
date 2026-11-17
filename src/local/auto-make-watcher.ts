@@ -1,9 +1,8 @@
 import type { Actor } from '../auth/actor.js';
 import { ServiceUnavailableError } from '../http/errors.js';
 import { logger } from '../logger.js';
-import { prisma } from '../prisma.js';
-import { Prisma as PrismaTypes } from '../generated/prisma/client.js';
-import { makeResumeWithChatGpt, makingNow } from './chatgpt-resume.js';
+import { makeCoverLetterOnly, makeResumeWithChatGpt } from './chatgpt-resume.js';
+import { claimNext, completeClaim, releaseClaim } from './auto-make-queue.js';
 import { chatGptReady } from './chatgpt-web.js';
 import { autoMakeEnabled, reportWorker } from './auto-make-state.js';
 
@@ -22,29 +21,32 @@ import { autoMakeEnabled, reportWorker } from './auto-make-state.js';
  * nothing while the Start / Stop button on romva.space is at Stop
  * (`auto-make-state.ts`); it still checks in, so the button can tell this
  * computer is up. When ChatGPT itself is unavailable (signed
- * out), the watcher pauses and tries again each minute; a Make that fails for
- * the application's own reasons (no prompt, a bad answer…) is retried after
- * five minutes, then hourly after three misses, so one broken row does not
- * hold up the rest.
+ * out), the watcher pauses and tries again each minute.
+ *
+ * It takes applications from the queue every worker shares
+ * (`auto-make-queue.ts`) — the Chrome extension and the desktop agent on other
+ * computers too — so no application is made twice, and a failed one waits
+ * (five minutes, then hourly after three misses) wherever it is tried next.
  */
+
+/** The database could not be reached or was full — a pause, not a failure of the application. */
+function isDatabaseOutage(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return /EMAXCONNSESSION|max clients reached|Can't reach database|Connection terminated|ECONNRESET|ETIMEDOUT|timeout exceeded when trying to connect|expired transaction/i.test(text);
+}
+
+/** This watcher's name in the queue. */
+const WORKER = 'local-api';
 
 /** Often enough that Start on romva.space takes effect in seconds, not a minute. */
 const POLL_MS = Number(process.env.CHATGPT_AUTO_MAKE_POLL_MS) || 15_000;
-const RETRY_AFTER_MS = 60 * 60_000;
-/** Only applications added in this window: a fresh start does not make the whole history. */
-const LOOKBACK_DAYS = Number(process.env.CHATGPT_AUTO_MAKE_DAYS) || 7;
-
-const failedAt = new Map<string, number>();
-/** Failed attempts per application, for the retry delay. */
-const failures = new Map<string, number>();
-const SOON_MS = 5 * 60_000;
 let busy = false;
 /** ChatGPT was unavailable on the last try: logged once, until a Make goes through. */
 let waitingForChatGpt = false;
 
 export function startAutoMakeWatcher(): void {
   if (process.env.CHATGPT_AUTO_MAKE?.trim().toLowerCase() !== 'true') return;
-  logger.info({ pollMs: POLL_MS, lookbackDays: LOOKBACK_DAYS }, 'Auto Make watcher started');
+  logger.info({ pollMs: POLL_MS }, 'Auto Make watcher started');
   const timer = setInterval(() => void tick(), POLL_MS);
   timer.unref();
   // Checked in every 30s even in the middle of a Make (which takes minutes),
@@ -78,7 +80,14 @@ async function tick(): Promise<void> {
         await reportWorker({ current: null, waitingReason: null });
         return;
       }
-      const next = await nextWaiting();
+      // Every application, whoever's: this computer works for them all. New
+      // Resumes first; then any stored Resume whose cover letter is missing.
+      let letterOnly = false;
+      let next = await claimNext({}, WORKER);
+      if (!next) {
+        next = await claimNext({}, WORKER, { letterOnly: true });
+        letterOnly = !!next;
+      }
       if (!next) {
         await reportWorker({ current: null, waitingReason: null });
         return;
@@ -87,22 +96,42 @@ async function tick(): Promise<void> {
       // The application's owner, so the Make sees exactly what they would.
       const actor: Actor = { id: next.userId, role: next.user.role === 'ADMIN' ? 'admin' : 'user' };
       if (!waitingForChatGpt) {
-        logger.info({ bidId: next.id, number: next.number, company: next.company }, 'Auto Make: starting');
+        logger.info({ bidId: next.id, number: next.number, company: next.company, letterOnly }, 'Auto Make: starting');
       }
       try {
+        if (letterOnly) {
+          const letter = await makeCoverLetterOnly(actor, next.id);
+          await completeClaim(next.id);
+          logger.info({ bidId: next.id, company: next.company, savedTo: letter.savedTo }, 'Auto Make: cover letter added');
+          waitingForChatGpt = false;
+          continue;
+        }
         const made = await makeResumeWithChatGpt(actor, next.id);
-        failedAt.delete(next.id);
-        failures.delete(next.id);
+        // The letter failed even after its retry: counted, so it is tried
+        // again later on its own (letter-only), not left missing for good.
+        if (made.coverLetterError) {
+          await releaseClaim(next.id, { failed: true, error: `Cover letter: ${made.coverLetterError}` });
+        } else {
+          await completeClaim(next.id);
+        }
         logger.info(
           { bidId: next.id, savedTo: made.savedTo, saveError: made.saveError, coverLetterError: made.coverLetterError },
           'Auto Make finished',
         );
         waitingForChatGpt = false;
       } catch (error) {
+        // The database out of reach (pooler full, network): nobody's fault
+        // here. Hand the application back uncounted and stop until next tick.
+        if (isDatabaseOutage(error)) {
+          await releaseClaim(next.id, { failed: false }).catch(() => undefined);
+          logger.warn({ reason: error instanceof Error ? error.message.slice(-200) : String(error) }, 'Auto Make paused: database unavailable');
+          return;
+        }
         // ChatGPT itself unavailable (signed out, window closed): not this
         // application's fault. Leave it waiting and try again next minute,
         // saying so once rather than once a minute.
         if (error instanceof ServiceUnavailableError) {
+          await releaseClaim(next.id, { failed: false });
           if (!waitingForChatGpt) {
             logger.warn({ reason: error.message }, 'Auto Make paused: waiting for ChatGPT');
           }
@@ -112,10 +141,9 @@ async function tick(): Promise<void> {
         }
         // This application's own failure (an answer that could not be read…):
         // tried again a few minutes later, then hourly after the third miss.
-        const attempts = (failures.get(next.id) ?? 0) + 1;
-        failures.set(next.id, attempts);
-        failedAt.set(next.id, Date.now());
-        logger.error({ err: error, bidId: next.id, company: next.company, attempts }, 'Auto Make failed; will retry');
+        const reason = error instanceof Error ? error.message : String(error);
+        await releaseClaim(next.id, { failed: true, error: reason }).catch(() => undefined);
+        logger.error({ err: error, bidId: next.id, company: next.company }, 'Auto Make failed; will retry');
       }
     }
   } catch (error) {
@@ -123,29 +151,4 @@ async function tick(): Promise<void> {
   } finally {
     busy = false;
   }
-}
-
-/** The oldest Draft application with a job description and no Resume, not recently failed or in flight. */
-async function nextWaiting() {
-  const now = Date.now();
-  const skip = new Set(makingNow());
-  for (const [id, at] of failedAt) {
-    const wait = (failures.get(id) ?? 0) >= 3 ? RETRY_AFTER_MS : SOON_MS;
-    if (now - at < wait) skip.add(id);
-    else failedAt.delete(id);
-  }
-
-  return prisma.bid.findFirst({
-    where: {
-      status: 'DRAFT',
-      createdAt: { gte: new Date(now - LOOKBACK_DAYS * 24 * 60 * 60_000) },
-      jobDescription: { not: null },
-      NOT: [{ jobDescription: '' }],
-      resumeDocument: { equals: PrismaTypes.AnyNull },
-      resumeFiles: { none: {} },
-      ...(skip.size ? { id: { notIn: [...skip] } } : {}),
-    },
-    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-    select: { id: true, number: true, company: true, userId: true, user: { select: { role: true } } },
-  });
 }

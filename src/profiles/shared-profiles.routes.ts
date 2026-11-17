@@ -16,6 +16,7 @@ import * as profilesService from '../admin/profiles.service.js';
 import { z } from 'zod';
 import { currentActor } from '../auth/actor.js';
 import * as promptsService from './profile-prompts.service.js';
+import * as avoidService from './profile-avoid.service.js';
 import multer from 'multer';
 import { BadRequestError } from '../http/errors.js';
 import { contentDisposition } from '../http/content-disposition.js';
@@ -53,6 +54,32 @@ sharedProfilesRouter.put(
   async (req, res) => {
     const { valid } = req as ValidatedRequest<UpdateProfileSettingsInput, ProfileIdParams>;
     res.json(await promptsService.updateProfileSettings(currentActor(req), valid.params.id, valid.body));
+  },
+);
+
+/**
+ * A Profile's "Avoid" lists — roles and companies the scraper extension does
+ * not save for it. Same access as the prompts. See `profile-avoid.service.ts`.
+ */
+sharedProfilesRouter.get('/:id/avoid', validate({ params: ProfileIdParamsSchema }), async (req, res) => {
+  const { id } = (req as ValidatedRequest<unknown, ProfileIdParams>).valid.params;
+  res.setHeader('Cache-Control', 'no-store');
+  res.json(await avoidService.getAvoidLists(currentActor(req), id));
+});
+
+const avoidList = z
+  .array(z.string().max(avoidService.MAX_AVOID_ENTRY_LENGTH, 'An entry is too long (100 characters at most).'))
+  .max(avoidService.MAX_AVOID_ENTRIES, 'Too many entries (300 at most).')
+  .optional();
+const UpdateAvoidListsSchema = z.object({ avoidRoles: avoidList, avoidCompanies: avoidList });
+type UpdateAvoidListsInput = z.infer<typeof UpdateAvoidListsSchema>;
+
+sharedProfilesRouter.put(
+  '/:id/avoid',
+  validate({ params: ProfileIdParamsSchema, body: UpdateAvoidListsSchema }),
+  async (req, res) => {
+    const { valid } = req as ValidatedRequest<UpdateAvoidListsInput, ProfileIdParams>;
+    res.json(await avoidService.updateAvoidLists(currentActor(req), valid.params.id, valid.body));
   },
 );
 

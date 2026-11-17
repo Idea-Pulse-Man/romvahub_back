@@ -301,6 +301,9 @@ model Bid {
   @@index([profileId, status])
   @@index([profileId, bidDate])
   @@unique([profileId, number])
+  /// The automatic Resume maker's hold on this application, while a worker makes it.
+  autoMakeClaim AutoMakeClaim?
+
   @@map("bids")
 }
 
@@ -458,6 +461,12 @@ model Profile {
   /// Editable by an admin and by every User the Profile is shared with.
   resumePrompt      String?
   coverLetterPrompt String?
+
+  /// Jobs the scraper extension does not save for this Profile: a job title
+  /// containing any of these roles, or a company whose name contains any of
+  /// these names (whole words, any case). Edited in Edit Profile → Avoid.
+  avoidRoles     String[] @default([])
+  avoidCompanies String[] @default([])
 
   /// Legacy free-text place line kept for Resume templates; prefer structured address fields.
   location String @default("")
@@ -667,4 +676,31 @@ model AutoMakeState {
   updatedAt DateTime @updatedAt
 
   @@map("auto_make_state")
+}
+
+/// Which Resume worker is making an application right now, and how its last
+/// attempts went. One row per application that has been tried.
+///
+/// The workers — the local API's watcher, the Chrome extension, the desktop
+/// agent, on any number of computers — share one queue: a worker takes an
+/// application by setting `claimedAt` (only when nobody else holds it, or the
+/// holder has gone quiet for 15 minutes), and the row is removed when the
+/// Resume and cover letter are done. A failure counts in `attempts`, and the
+/// application waits before anyone tries it again.
+model AutoMakeClaim {
+  bidId String @id @db.Uuid
+  bid   Bid    @relation(fields: [bidId], references: [id], onDelete: Cascade)
+
+  /// Who holds it: "local-api", or a worker's own name ("extension · Jonathan's laptop").
+  worker    String?
+  /// When it was taken (or last moved on a step). Null: free to take.
+  claimedAt DateTime?
+
+  attempts  Int       @default(0)
+  lastError String?
+  failedAt  DateTime?
+
+  updatedAt DateTime @updatedAt
+
+  @@map("auto_make_claims")
 }

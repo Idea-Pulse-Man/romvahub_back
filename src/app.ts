@@ -28,6 +28,7 @@ import { notificationsRouter } from './notifications/notifications.routes.js';
 import { dataRouter } from './data/data.routes.js';
 import { localRouter } from './local/local.routes.js';
 import { autoMakeRouter } from './local/auto-make-state.js';
+import { autoMakeJobsRouter } from './local/auto-make-jobs.routes.js';
 import { openApiDocument } from './docs/openapi.js';
 
 // helmet's `exports` map carries no "types" condition, so a toolchain that
@@ -109,6 +110,7 @@ export function createApp(): Express {
   api.use('/data', dataRouter);
   api.use('/local', localRouter);
   api.use('/auto-make', autoMakeRouter);
+  api.use('/auto-make', autoMakeJobsRouter);
   api.use('/admin/ai', aiConfigRouter);
   api.use('/admin/users', adminUsersRouter);
   api.use('/admin/profiles', adminProfilesRouter);

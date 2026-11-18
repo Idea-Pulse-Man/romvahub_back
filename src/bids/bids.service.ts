@@ -111,6 +111,19 @@ function toCommitmentData(details: NonNullable<CreateBidInput['commitmentDetails
   };
 }
 
+/**
+ * The posting time as sent, or null. A time in the future (a board's clock, or
+ * a timezone read wrongly) is taken as "now" — it cannot have been posted later
+ * than it was saved.
+ */
+function parsePostedAt(value: string | undefined): Date | null {
+  if (!value) return null;
+  const at = new Date(value);
+  if (Number.isNaN(at.getTime())) return null;
+  const now = new Date();
+  return at > now ? now : at;
+}
+
 /** Scalar columns shared by create and update. Only defined keys are emitted. */
 function toScalarData(input: UpdateBidInput): PrismaTypes.BidUncheckedUpdateInput {
   const data: PrismaTypes.BidUncheckedUpdateInput = {};
@@ -125,6 +138,7 @@ function toScalarData(input: UpdateBidInput): PrismaTypes.BidUncheckedUpdateInpu
   // Nullable columns: an explicitly-supplied blank clears them.
   if ('jobUrl' in input) data.jobUrl = input.jobUrl ?? null;
   if ('jobDescription' in input) data.jobDescription = input.jobDescription ?? null;
+  if ('postedAt' in input) data.postedAt = parsePostedAt(input.postedAt);
   if ('resumeVersion' in input) data.resumeVersion = input.resumeVersion ?? null;
   if ('notes' in input) data.notes = input.notes ?? null;
   if ('followUpDate' in input) {
@@ -481,7 +495,8 @@ async function resolveProfileFiling(
  * 1. **The same posting** — the same job link, ignoring a #fragment, utm_*
  *    parameters, a trailing slash and case (`jobUrlKey`).
  * 2. **The same employer** — any application at the same company, however its
- *    name was written ("Acme" = "Acme, Inc."; `companyKey`).
+ *    name was written ("Acme" = "Acme, Inc."; `companyKey`). Expired
+ *    applications do not count: that company is open to apply to again.
  *
  * Per filing scope: the application Profile when there is one, otherwise the
  * owner's legacy rows. Two candidates may apply to the same company; one
@@ -529,7 +544,12 @@ async function assertNotDuplicate(
 
   if (candidate.company === undefined) return;
   const key = companyKey(candidate.company);
-  const sameCompany = rows.filter((row) => companyKey(row.company) === key);
+  // An Expired application does not hold the employer: the posting closed
+  // without the candidate applying, so another role there is fair game. The
+  // same posting is still refused by the link rule above.
+  const sameCompany = rows.filter(
+    (row) => row.status !== 'EXPIRED' && companyKey(row.company) === key,
+  );
   if (sameCompany.length) {
     const first = sameCompany[0]!;
     throw new DuplicateApplicationError(
@@ -558,6 +578,7 @@ export async function createBid(actor: Actor, input: CreateBidInput): Promise<Bi
       jobUrl: input.jobUrl ?? null,
       location: input.location,
       jobDescription: input.jobDescription ?? null,
+      postedAt: parsePostedAt(input.postedAt),
       rateType: input.rateType ? toDbRateType(input.rateType) : null,
       rateAmount: input.rateAmount ?? null,
       bidDate: parseDateOnly(input.bidDate),

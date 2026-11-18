@@ -211,6 +211,12 @@ model Bid {
   location       String
   jobDescription String?
 
+  /// When the job board says the posting went up, as the scraper read it.
+  /// Null when the source did not show one. A Draft whose posting is more
+  /// than a day old is marked Expired at the start of each day — see
+  /// `src/bids/draft-expiry.ts`.
+  postedAt DateTime?
+
   // Legacy: no longer captured by the UI, but seed and pre-existing bids carry
   // it and every screen still reads it for display.
   rateType   RateType?
@@ -300,6 +306,7 @@ model Bid {
   @@index([userId, bidDate])
   @@index([profileId, status])
   @@index([profileId, bidDate])
+  @@index([status, postedAt])
   @@unique([profileId, number])
   /// The automatic Resume maker's hold on this application, while a worker makes it.
   autoMakeClaim AutoMakeClaim?

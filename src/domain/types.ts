@@ -173,6 +173,8 @@ export interface Bid {
   jobUrl?: string;
   location: string;
   jobDescription?: string;
+  /** When the job board says the posting went up (ISO instant), if known. */
+  postedAt?: string;
   rateType?: RateType;
   rateAmount?: number;
   bidDate: string;

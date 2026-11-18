@@ -36,13 +36,13 @@ const credentialLimiter = rateLimit({
 
 authRouter.post('/login', credentialLimiter, validate({ body: LoginSchema }), async (req, res) => {
   const { email, password } = (req as ValidatedRequest<LoginInput>).valid.body;
-  const { user, accessToken, refreshToken } = await authService.login(email, password, {
+  const { user, accessToken, refreshToken, sessionExpiresAt } = await authService.login(email, password, {
     ip: req.ip,
     userAgent: req.get('user-agent'),
     acceptLanguage: req.get('accept-language'),
   });
 
-  setAuthCookies(res, accessToken, refreshToken);
+  setAuthCookies(res, accessToken, refreshToken, sessionExpiresAt);
   res.json({ user, accessToken, refreshToken });
 });
 
@@ -64,8 +64,8 @@ authRouter.post('/refresh', async (req, res) => {
   }
 
   try {
-    const { user, accessToken, refreshToken } = await authService.refresh(presented);
-    setAuthCookies(res, accessToken, refreshToken);
+    const { user, accessToken, refreshToken, sessionExpiresAt } = await authService.refresh(presented);
+    setAuthCookies(res, accessToken, refreshToken, sessionExpiresAt);
     res.json({ user, accessToken, refreshToken });
   } catch (error) {
     // A refresh that cannot succeed should not leave a stale cookie behind to

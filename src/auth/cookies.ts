@@ -37,14 +37,25 @@ export function parseDuration(value: string): number {
   return amount * scale;
 }
 
-export function setAuthCookies(res: Response, accessToken: string, refreshToken: string): void {
-  res.cookie(ACCESS_COOKIE, accessToken, baseOptions(parseDuration(env.ACCESS_TOKEN_TTL)));
+export function setAuthCookies(
+  res: Response,
+  accessToken: string,
+  refreshToken: string,
+  sessionExpiresAt: Date,
+): void {
+  // Neither cookie outlives the session it belongs to.
+  const sessionRemainingMs = Math.max(0, sessionExpiresAt.getTime() - Date.now());
+  res.cookie(
+    ACCESS_COOKIE,
+    accessToken,
+    baseOptions(Math.min(parseDuration(env.ACCESS_TOKEN_TTL), sessionRemainingMs)),
+  );
   res.cookie(
     REFRESH_COOKIE,
     refreshToken,
     // Scoped to the auth routes so it is never sent on ordinary API traffic.
     {
-      ...baseOptions(env.REFRESH_TOKEN_TTL_DAYS * 86_400_000),
+      ...baseOptions(sessionRemainingMs),
       path: '/api/auth',
     },
   );

@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { env } from '../env.js';
 import { UnauthorizedError } from '../http/errors.js';
 import type { UserRole } from './auth.schemas.js';
+import { parseDuration } from './cookies.js';
 
 const ISSUER = 'remote-ops-backend';
 const AUDIENCE = 'remote-ops-app';
@@ -13,9 +14,19 @@ export interface AccessTokenPayload {
   role: UserRole;
 }
 
-export function signAccessToken(payload: AccessTokenPayload): string {
+/**
+ * Signs an access token that lives `ACCESS_TOKEN_TTL`, but never past
+ * `sessionExpiresAt` — so the last token of a session ends with the session
+ * rather than up to one TTL after it.
+ */
+export function signAccessToken(payload: AccessTokenPayload, sessionExpiresAt?: Date): string {
+  let ttlSeconds = Math.floor(parseDuration(env.ACCESS_TOKEN_TTL) / 1000);
+  if (sessionExpiresAt) {
+    const remaining = Math.floor((sessionExpiresAt.getTime() - Date.now()) / 1000);
+    ttlSeconds = Math.max(1, Math.min(ttlSeconds, remaining));
+  }
   return jwt.sign(payload, env.JWT_ACCESS_SECRET, {
-    expiresIn: env.ACCESS_TOKEN_TTL as jwt.SignOptions['expiresIn'],
+    expiresIn: ttlSeconds,
     issuer: ISSUER,
     audience: AUDIENCE,
   });
@@ -54,10 +65,15 @@ export function verifyAccessToken(token: string): AccessTokenPayload {
  * the database on every use so they can be revoked, which a self-contained
  * token cannot be. Only the SHA-256 digest is stored, so a database leak does
  * not hand over usable tokens.
+ *
+ * `expiresAt` is passed on rotation so the replacement keeps the session's
+ * original deadline: a session lasts `REFRESH_TOKEN_TTL_DAYS` from sign-in,
+ * however active it is, rather than sliding forward on every refresh.
  */
-export function createRefreshToken(): { token: string; tokenHash: string; expiresAt: Date } {
+export function createRefreshToken(
+  expiresAt: Date = new Date(Date.now() + env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000),
+): { token: string; tokenHash: string; expiresAt: Date } {
   const token = randomBytes(48).toString('base64url');
-  const expiresAt = new Date(Date.now() + env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
   return { token, tokenHash: hashRefreshToken(token), expiresAt };
 }
 

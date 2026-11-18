@@ -6,7 +6,7 @@ import { prisma } from '../prisma.js';
  * computer (the local API's watcher, the Chrome extension, the desktop agent).
  *
  * Waiting: a Draft application from the last few days with a job description
- * and no Resume. Taking one is atomic (`claim`): one worker per application,
+ * and no Resume, or a stored Resume but no cover letter. Taking one is atomic (`claim`): one worker per application,
  * and a worker that went quiet for CLAIM_TTL loses it to the next. A failed
  * attempt is counted and the application waits — 5 minutes, or an hour after
  * three misses — on every computer alike.
@@ -22,14 +22,32 @@ const LOOKBACK_DAYS = Number(process.env.CHATGPT_AUTO_MAKE_DAYS) || 7;
 const NOW_UTC = PrismaTypes.sql`(now() at time zone 'utc')`;
 
 /**
- * The applications in `scope` waiting, oldest first, not held by anyone and
- * not cooling down: for a Resume (and its letter), or — `letterOnly` — for
- * just the cover letter, when the Resume is stored but its letter failed.
+ * What a worker takes: `resume` — no Resume yet (it makes the Resume and its
+ * letter); `letter` — the Resume is stored but its cover letter is missing;
+ * `any` — either, whichever application comes first.
  */
-async function waiting(scope: PrismaTypes.BidWhereInput, take: number, letterOnly = false) {
+export type ClaimKind = 'resume' | 'letter' | 'any';
+
+const NEEDS_RESUME: PrismaTypes.BidWhereInput = {
+  resumeDocument: { equals: PrismaTypes.AnyNull },
+  resumeFiles: { none: {} },
+};
+const NEEDS_LETTER: PrismaTypes.BidWhereInput = {
+  resumeFiles: { some: {} },
+  coverLetterDocument: { equals: PrismaTypes.AnyNull },
+};
+
+/**
+ * The applications in `scope` waiting, not held by anyone and not cooling
+ * down, in the Applications table's order (lowest number first, as the rows
+ * are listed): the worker goes down the list and does whatever each one is
+ * missing before moving on. `letterOnly` on each: only its cover letter is
+ * missing.
+ */
+async function waiting(scope: PrismaTypes.BidWhereInput, take: number, kind: ClaimKind = 'resume') {
   const now = Date.now();
   const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000);
-  return prisma.bid.findMany({
+  const rows = await prisma.bid.findMany({
     where: {
       AND: [
         scope,
@@ -38,9 +56,8 @@ async function waiting(scope: PrismaTypes.BidWhereInput, take: number, letterOnl
           createdAt: { gte: new Date(now - LOOKBACK_DAYS * 24 * 60 * 60_000) },
           jobDescription: { not: null },
           NOT: [{ jobDescription: '' }],
-          ...(letterOnly
-            ? { resumeFiles: { some: {} }, coverLetterDocument: { equals: PrismaTypes.AnyNull } }
-            : { resumeDocument: { equals: PrismaTypes.AnyNull }, resumeFiles: { none: {} } }),
+          ...(kind === 'resume' ? NEEDS_RESUME : kind === 'letter' ? NEEDS_LETTER : {}),
+          ...(kind === 'any' ? { AND: [{ OR: [NEEDS_RESUME, NEEDS_LETTER] }] } : {}),
           OR: [
             { autoMakeClaim: null },
             {
@@ -61,25 +78,34 @@ async function waiting(scope: PrismaTypes.BidWhereInput, take: number, letterOnl
         },
       ],
     },
-    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    orderBy: [{ number: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
     take,
-    select: { id: true, number: true, company: true, userId: true, user: { select: { role: true } } },
+    select: {
+      id: true,
+      number: true,
+      company: true,
+      userId: true,
+      user: { select: { role: true } },
+      resumeFiles: { select: { id: true }, take: 1 },
+    },
   });
+  return rows.map(({ resumeFiles, ...row }) => ({ ...row, letterOnly: resumeFiles.length > 0 }));
 }
 
 export type ClaimedApplication = Awaited<ReturnType<typeof waiting>>[number];
 
 /**
- * Takes the oldest waiting application in `scope` for `worker`, or returns
- * null when there is none. Two workers asking at once never get the same one:
- * the row is written only when it is free (or its holder went quiet).
+ * Takes the first waiting application in `scope` for `worker` (see `waiting`
+ * for the order), or returns null when there is none. Two workers asking at
+ * once never get the same one: the row is written only when it is free (or
+ * its holder went quiet).
  */
 export async function claimNext(
   scope: PrismaTypes.BidWhereInput,
   worker: string,
-  { letterOnly = false }: { letterOnly?: boolean } = {},
+  { kind = 'resume' }: { kind?: ClaimKind } = {},
 ): Promise<ClaimedApplication | null> {
-  for (const candidate of await waiting(scope, 5, letterOnly)) {
+  for (const candidate of await waiting(scope, 5, kind)) {
     const taken = await prisma.$queryRaw<{ bidId: string }[]>`
       INSERT INTO "auto_make_claims" ("bidId", "worker", "claimedAt", "updatedAt")
       VALUES (${candidate.id}::uuid, ${worker}, ${NOW_UTC}, ${NOW_UTC})

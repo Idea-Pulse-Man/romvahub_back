@@ -99,18 +99,15 @@ async function tick(): Promise<void> {
         await reportWorker({ current: null, waitingReason: null });
         return;
       }
-      // Every application, whoever's: this computer works for them all. New
-      // Resumes first; then any stored Resume whose cover letter is missing.
-      let letterOnly = false;
-      let next = await claimNext({}, WORKER);
-      if (!next) {
-        next = await claimNext({}, WORKER, { letterOnly: true });
-        letterOnly = !!next;
-      }
+      // Every application, whoever's: this computer works for them all.
+      // Down the Applications list, lowest number first: whatever the next one
+      // is missing — its Resume (and letter), or just its cover letter.
+      const next = await claimNext({}, WORKER, { kind: 'any' });
       if (!next) {
         await reportWorker({ current: null, waitingReason: null });
         return;
       }
+      const { letterOnly } = next;
       await reportWorker({ current: { bidId: next.id, company: next.company }, waitingReason: null });
       // The application's owner, so the Make sees exactly what they would.
       const actor: Actor = { id: next.userId, role: next.user.role === 'ADMIN' ? 'admin' : 'user' };

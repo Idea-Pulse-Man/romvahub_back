@@ -9,6 +9,7 @@ import { logger } from '../logger.js';
 import { autoMakeEnabled, reportWorker } from './auto-make-state.js';
 import {
   claimNext,
+  type ClaimKind,
   completeClaim,
   isClaimed,
   releaseClaim,
@@ -81,10 +82,11 @@ function isAnswerProblem(error: unknown): boolean {
  * one that cannot even be prepared (its Profile has no Resume prompt yet, its
  * stored Resume has no text…) is counted as failed and the next one is offered.
  */
-async function claimPrepared(actor: Actor, worker: string, letterOnly: boolean) {
+async function claimPrepared(actor: Actor, worker: string, kind: ClaimKind) {
   for (let tries = 0; tries < 3; tries += 1) {
-    const claimed = await claimNext(bidAccessScope(actor), worker, { letterOnly });
+    const claimed = await claimNext(bidAccessScope(actor), worker, { kind });
     if (!claimed) return null;
+    const { letterOnly } = claimed;
     try {
       const job = await prepareMake(actor, claimed.id);
       const coverLetterMessage = letterOnly ? await coverLetterMessageFromStoredResume(job) : null;
@@ -118,10 +120,11 @@ autoMakeJobsRouter.post('/claim', validate({ body: ClaimSchema }), async (req, r
     return;
   }
 
-  // New Resumes first; then, for a worker that can take them, stored Resumes
-  // whose cover letter is missing.
-  const job =
-    (await claimPrepared(actor, worker, false)) ?? (letterOnlyJobs ? await claimPrepared(actor, worker, true) : null);
+  // Down the Applications list, lowest number first: whatever the next one is
+  // missing — its Resume (and letter), or, for a worker that can do it, just
+  // its cover letter. (One that keeps failing waits out its back-off, so it
+  // never blocks the list.)
+  const job = await claimPrepared(actor, worker, letterOnlyJobs ? 'any' : 'resume');
   if (!job) await reportWorker({});
   res.json({ enabled: true, job });
 });

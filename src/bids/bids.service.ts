@@ -827,6 +827,50 @@ export async function removeResumeFiles(actor: Actor, bidId: string): Promise<Bi
 }
 
 /**
+ * Earlier automatic-make failures on an application, forgotten, so a Resume
+ * or letter just deleted is made again at once rather than after a back-off.
+ * A worker holding it right now keeps its hold.
+ */
+function forgetAutoMakeFailures(bidId: string) {
+  return prisma.autoMakeClaim.deleteMany({ where: { bidId, claimedAt: null } });
+}
+
+/**
+ * Deletes an application's Resume — the stored files and the generated
+ * document both — for one that came out wrong. It goes back to "No resume",
+ * so the automatic maker makes it (and its cover letter) again. The cover
+ * letter is left until then.
+ */
+export async function deleteResume(actor: Actor, bidId: string): Promise<Bid> {
+  const existing = await findRowOrThrow(actor, bidId);
+  await prisma.$transaction([
+    prisma.bidResumeFile.deleteMany({ where: { bidId: existing.id } }),
+    prisma.bid.update({
+      where: { id: existing.id },
+      data: { resumeDocument: PrismaTypes.DbNull, updatedAt: new Date() },
+    }),
+    forgetAutoMakeFailures(existing.id),
+  ]);
+  return getBid(actor, existing.id);
+}
+
+/**
+ * Deletes an application's cover letter, for one that came out wrong. With
+ * its Resume still stored, the automatic maker writes the letter again.
+ */
+export async function deleteCoverLetter(actor: Actor, bidId: string): Promise<Bid> {
+  const existing = await findRowOrThrow(actor, bidId);
+  await prisma.$transaction([
+    prisma.bid.update({
+      where: { id: existing.id },
+      data: { coverLetterDocument: PrismaTypes.DbNull, updatedAt: new Date() },
+    }),
+    forgetAutoMakeFailures(existing.id),
+  ]);
+  return getBid(actor, existing.id);
+}
+
+/**
  * The proof screenshot — the job site's confirmation page — uploaded against
  * one application, replacing whatever was there. Refused with 409 when it is
  * the same picture as one already on another of the profile's applications.

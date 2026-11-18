@@ -495,8 +495,8 @@ async function resolveProfileFiling(
  * 1. **The same posting** — the same job link, ignoring a #fragment, utm_*
  *    parameters, a trailing slash and case (`jobUrlKey`).
  * 2. **The same employer** — any application at the same company, however its
- *    name was written ("Acme" = "Acme, Inc."; `companyKey`). Expired
- *    applications do not count: that company is open to apply to again.
+ *    name was written ("Acme" = "Acme, Inc."; `companyKey`). Expired and
+ *    Other applications do not count: that company is open to apply to again.
  *
  * Per filing scope: the application Profile when there is one, otherwise the
  * owner's legacy rows. Two candidates may apply to the same company; one
@@ -506,6 +506,9 @@ async function resolveProfileFiling(
  * two saves arriving together (the scraper extension saving several tabs)
  * cannot both pass the check before either is written.
  */
+/** Statuses that leave their company free for another application. */
+const COMPANY_OPEN_STATUSES: ReadonlySet<string> = new Set(['EXPIRED', 'OTHER']);
+
 async function assertNotDuplicate(
   tx: PrismaTypes.TransactionClient,
   scope: BidScope,
@@ -544,11 +547,11 @@ async function assertNotDuplicate(
 
   if (candidate.company === undefined) return;
   const key = companyKey(candidate.company);
-  // An Expired application does not hold the employer: the posting closed
-  // without the candidate applying, so another role there is fair game. The
-  // same posting is still refused by the link rule above.
+  // An Expired or Other application does not hold the employer: it closed
+  // without an application of the candidate's own, so another role there is
+  // fair game. The same posting is still refused by the link rule above.
   const sameCompany = rows.filter(
-    (row) => row.status !== 'EXPIRED' && companyKey(row.company) === key,
+    (row) => !COMPANY_OPEN_STATUSES.has(row.status) && companyKey(row.company) === key,
   );
   if (sameCompany.length) {
     const first = sameCompany[0]!;

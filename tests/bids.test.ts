@@ -675,6 +675,12 @@ describe('list filters', () => {
       expect(samePosting.body.error.data.reason).toBe('job-url');
     });
 
+    it('lets an application marked Other free its employer', async () => {
+      const user = await createUser();
+      await createBid(user, { company: 'Globex', role: 'Engineer', status: 'Other' });
+      await createBid(user, { company: 'Globex LLC', role: 'Designer' });
+    });
+
     it('lets two candidates apply to the same employer', async () => {
       await createBid(await createUser(), { company: 'Acme' });
       await createBid(await createUser(), { company: 'Acme' });

@@ -23,8 +23,6 @@ function toApiRole(role: 'USER' | 'ADMIN'): UserRole {
 export interface IssuedTokens {
   accessToken: string;
   refreshToken: string;
-  /** When the session ends and the user must sign in again (fixed at sign-in). */
-  sessionExpiresAt: Date;
 }
 
 export interface AuthResult extends IssuedTokens {
@@ -45,28 +43,20 @@ function toAuthUser(user: {
   };
 }
 
-async function issueTokens(
-  user: {
-    id: string;
-    email: string;
-    role: 'USER' | 'ADMIN';
-  },
-  /** The session's existing deadline on rotation; omitted on sign-in. */
-  sessionExpiresAt?: Date,
-): Promise<IssuedTokens> {
-  const { token, tokenHash, expiresAt } = createRefreshToken(sessionExpiresAt);
+async function issueTokens(user: {
+  id: string;
+  email: string;
+  role: 'USER' | 'ADMIN';
+}): Promise<IssuedTokens> {
+  const { token, tokenHash, expiresAt } = createRefreshToken();
   await prisma.refreshToken.create({ data: { userId: user.id, tokenHash, expiresAt } });
 
   return {
     // The role rides in the access token so that authorising a request costs no
     // query. It is 15 minutes stale at worst, and a rotation reads the user row
     // again — which is the right trade for a flag that changes by hand.
-    accessToken: signAccessToken(
-      { sub: user.id, email: user.email, role: toApiRole(user.role) },
-      expiresAt,
-    ),
+    accessToken: signAccessToken({ sub: user.id, email: user.email, role: toApiRole(user.role) }),
     refreshToken: token,
-    sessionExpiresAt: expiresAt,
   };
 }
 
@@ -136,8 +126,7 @@ export async function login(
 
 /**
  * Rotates a refresh token: the presented token is revoked and a fresh one
- * issued with the same expiry, so the session still ends a fixed time after
- * sign-in. Presenting an already-revoked token means it was captured and
+ * issued. Presenting an already-revoked token means it was captured and
  * replayed, so every token in that user's family is revoked and the session
  * ends.
  */
@@ -178,7 +167,7 @@ export async function refresh(presentedToken: string): Promise<AuthResult> {
     data: { revokedAt: new Date() },
   });
 
-  return { user: toAuthUser(stored.user), ...(await issueTokens(stored.user, stored.expiresAt)) };
+  return { user: toAuthUser(stored.user), ...(await issueTokens(stored.user)) };
 }
 
 /** Revokes the presented token. Logging out twice is not an error. */

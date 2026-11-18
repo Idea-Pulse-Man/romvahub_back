@@ -381,6 +381,22 @@ bidsRouter.post(
   },
 );
 
+/**
+ * Deletes the application's Resume (files and generated document) — the
+ * Delete button in the Applications table, for one that came out wrong. The
+ * automatic maker then makes it again. The bid comes back without it.
+ */
+bidsRouter.delete('/:id/resume', validate({ params: BidIdParamsSchema }), async (req, res) => {
+  const { id } = (req as ValidatedRequest<unknown, BidIdParams>).valid.params;
+  res.json(await bidsService.deleteResume(currentActor(req), id));
+});
+
+/** Deletes the application's cover letter; the automatic maker writes it again. The bid comes back without it. */
+bidsRouter.delete('/:id/cover-letter', validate({ params: BidIdParamsSchema }), async (req, res) => {
+  const { id } = (req as ValidatedRequest<unknown, BidIdParams>).valid.params;
+  res.json(await bidsService.deleteCoverLetter(currentActor(req), id));
+});
+
 /** Removes every synced Resume file from an application. The bid comes back without them. */
 bidsRouter.delete('/:id/resume-files', validate({ params: BidIdParamsSchema }), async (req, res) => {
   const { id } = (req as ValidatedRequest<unknown, BidIdParams>).valid.params;

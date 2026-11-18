@@ -3,6 +3,7 @@ import { env } from './env.js';
 import { logger } from './logger.js';
 import { prisma } from './prisma.js';
 import { startAutoMakeWatcher } from './local/auto-make-watcher.js';
+import { startDraftExpiry } from './bids/draft-expiry.js';
 
 const app = createApp();
 
@@ -14,6 +15,8 @@ const server = app.listen(env.PORT, () => {
   // Resumes for applications filed elsewhere (the scraper posts to the
   // deployed API, which cannot drive Chrome). Off unless CHATGPT_AUTO_MAKE=true.
   startAutoMakeWatcher();
+  // Each morning (Eastern): Drafts posted more than a day ago become Expired.
+  startDraftExpiry();
 });
 
 /**

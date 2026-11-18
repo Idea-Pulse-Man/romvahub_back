@@ -111,6 +111,19 @@ function toCommitmentData(details: NonNullable<CreateBidInput['commitmentDetails
   };
 }
 
+/**
+ * The posting time as sent, or null. A time in the future (a board's clock, or
+ * a timezone read wrongly) is taken as "now" — it cannot have been posted later
+ * than it was saved.
+ */
+function parsePostedAt(value: string | undefined): Date | null {
+  if (!value) return null;
+  const at = new Date(value);
+  if (Number.isNaN(at.getTime())) return null;
+  const now = new Date();
+  return at > now ? now : at;
+}
+
 /** Scalar columns shared by create and update. Only defined keys are emitted. */
 function toScalarData(input: UpdateBidInput): PrismaTypes.BidUncheckedUpdateInput {
   const data: PrismaTypes.BidUncheckedUpdateInput = {};
@@ -125,6 +138,7 @@ function toScalarData(input: UpdateBidInput): PrismaTypes.BidUncheckedUpdateInpu
   // Nullable columns: an explicitly-supplied blank clears them.
   if ('jobUrl' in input) data.jobUrl = input.jobUrl ?? null;
   if ('jobDescription' in input) data.jobDescription = input.jobDescription ?? null;
+  if ('postedAt' in input) data.postedAt = parsePostedAt(input.postedAt);
   if ('resumeVersion' in input) data.resumeVersion = input.resumeVersion ?? null;
   if ('notes' in input) data.notes = input.notes ?? null;
   if ('followUpDate' in input) {
@@ -481,7 +495,8 @@ async function resolveProfileFiling(
  * 1. **The same posting** — the same job link, ignoring a #fragment, utm_*
  *    parameters, a trailing slash and case (`jobUrlKey`).
  * 2. **The same employer** — any application at the same company, however its
- *    name was written ("Acme" = "Acme, Inc."; `companyKey`).
+ *    name was written ("Acme" = "Acme, Inc."; `companyKey`). Expired and
+ *    Other applications do not count: that company is open to apply to again.
  *
  * Per filing scope: the application Profile when there is one, otherwise the
  * owner's legacy rows. Two candidates may apply to the same company; one
@@ -491,6 +506,9 @@ async function resolveProfileFiling(
  * two saves arriving together (the scraper extension saving several tabs)
  * cannot both pass the check before either is written.
  */
+/** Statuses that leave their company free for another application. */
+const COMPANY_OPEN_STATUSES: ReadonlySet<string> = new Set(['EXPIRED', 'OTHER']);
+
 async function assertNotDuplicate(
   tx: PrismaTypes.TransactionClient,
   scope: BidScope,
@@ -529,7 +547,12 @@ async function assertNotDuplicate(
 
   if (candidate.company === undefined) return;
   const key = companyKey(candidate.company);
-  const sameCompany = rows.filter((row) => companyKey(row.company) === key);
+  // An Expired or Other application does not hold the employer: it closed
+  // without an application of the candidate's own, so another role there is
+  // fair game. The same posting is still refused by the link rule above.
+  const sameCompany = rows.filter(
+    (row) => !COMPANY_OPEN_STATUSES.has(row.status) && companyKey(row.company) === key,
+  );
   if (sameCompany.length) {
     const first = sameCompany[0]!;
     throw new DuplicateApplicationError(
@@ -558,6 +581,7 @@ export async function createBid(actor: Actor, input: CreateBidInput): Promise<Bi
       jobUrl: input.jobUrl ?? null,
       location: input.location,
       jobDescription: input.jobDescription ?? null,
+      postedAt: parsePostedAt(input.postedAt),
       rateType: input.rateType ? toDbRateType(input.rateType) : null,
       rateAmount: input.rateAmount ?? null,
       bidDate: parseDateOnly(input.bidDate),
@@ -798,6 +822,50 @@ export async function removeResumeFiles(actor: Actor, bidId: string): Promise<Bi
   await prisma.$transaction([
     prisma.bidResumeFile.deleteMany({ where: { bidId: existing.id } }),
     prisma.bid.update({ where: { id: existing.id }, data: { updatedAt: new Date() } }),
+  ]);
+  return getBid(actor, existing.id);
+}
+
+/**
+ * Earlier automatic-make failures on an application, forgotten, so a Resume
+ * or letter just deleted is made again at once rather than after a back-off.
+ * A worker holding it right now keeps its hold.
+ */
+function forgetAutoMakeFailures(bidId: string) {
+  return prisma.autoMakeClaim.deleteMany({ where: { bidId, claimedAt: null } });
+}
+
+/**
+ * Deletes an application's Resume — the stored files and the generated
+ * document both — for one that came out wrong. It goes back to "No resume",
+ * so the automatic maker makes it (and its cover letter) again. The cover
+ * letter is left until then.
+ */
+export async function deleteResume(actor: Actor, bidId: string): Promise<Bid> {
+  const existing = await findRowOrThrow(actor, bidId);
+  await prisma.$transaction([
+    prisma.bidResumeFile.deleteMany({ where: { bidId: existing.id } }),
+    prisma.bid.update({
+      where: { id: existing.id },
+      data: { resumeDocument: PrismaTypes.DbNull, updatedAt: new Date() },
+    }),
+    forgetAutoMakeFailures(existing.id),
+  ]);
+  return getBid(actor, existing.id);
+}
+
+/**
+ * Deletes an application's cover letter, for one that came out wrong. With
+ * its Resume still stored, the automatic maker writes the letter again.
+ */
+export async function deleteCoverLetter(actor: Actor, bidId: string): Promise<Bid> {
+  const existing = await findRowOrThrow(actor, bidId);
+  await prisma.$transaction([
+    prisma.bid.update({
+      where: { id: existing.id },
+      data: { coverLetterDocument: PrismaTypes.DbNull, updatedAt: new Date() },
+    }),
+    forgetAutoMakeFailures(existing.id),
   ]);
   return getBid(actor, existing.id);
 }

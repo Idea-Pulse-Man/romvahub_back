@@ -103,6 +103,7 @@ const BidResponseSchema = z.object({
     ),
   location: z.string(),
   jobDescription: z.string().optional(),
+  postedAt: z.iso.datetime().optional(),
   rateType: RateTypeSchema.optional(),
   rateAmount: z.number().optional(),
   bidDate: z.string(),

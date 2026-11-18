@@ -655,6 +655,32 @@ describe('list filters', () => {
       await createBid(user, { company: 'Acme Robotics', role: 'Designer' });
     });
 
+    it('lets an Expired application free its employer, but not its posting', async () => {
+      const user = await createUser();
+      await createBid(user, {
+        company: 'Acme',
+        role: 'Engineer',
+        status: 'Expired',
+        jobUrl: 'https://boards.example.com/acme/jobs/1',
+      });
+
+      // Another role at the same company is accepted.
+      await createBid(user, { company: 'Acme, Inc.', role: 'Designer' });
+
+      // The very same posting is still refused.
+      const samePosting = await user.agent
+        .post('/api/bids')
+        .send(bidPayload({ company: 'Acme', jobUrl: 'https://boards.example.com/acme/jobs/1' }))
+        .expect(409);
+      expect(samePosting.body.error.data.reason).toBe('job-url');
+    });
+
+    it('lets an application marked Other free its employer', async () => {
+      const user = await createUser();
+      await createBid(user, { company: 'Globex', role: 'Engineer', status: 'Other' });
+      await createBid(user, { company: 'Globex LLC', role: 'Designer' });
+    });
+
     it('lets two candidates apply to the same employer', async () => {
       await createBid(await createUser(), { company: 'Acme' });
       await createBid(await createUser(), { company: 'Acme' });

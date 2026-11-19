@@ -143,3 +143,14 @@ export class ServiceUnavailableError extends AppError {
     super(503, 'SERVICE_UNAVAILABLE', message);
   }
 }
+
+/**
+ * A refresh token that was already rotated, presented again after the race
+ * window: refused, but the session cookies are left as they are, since the
+ * browser may already hold the newer one.
+ */
+export class StaleRefreshError extends UnauthorizedError {
+  constructor() {
+    super('This session was renewed elsewhere. Reload the page; sign in again only if that does not help.');
+  }
+}

@@ -1,7 +1,7 @@
 import { Router, type Request } from 'express';
 import rateLimit from 'express-rate-limit';
 import { env } from '../env.js';
-import { RefreshRaceError, UnauthorizedError } from '../http/errors.js';
+import { RefreshRaceError, StaleRefreshError, UnauthorizedError } from '../http/errors.js';
 import { validate, type ValidatedRequest } from '../http/validate.js';
 import { LoginSchema, MfaVerifySchema, type LoginInput, type MfaVerifyInput } from './auth.schemas.js';
 import * as authService from './auth.service.js';
@@ -86,8 +86,11 @@ authRouter.post('/refresh', async (req, res) => {
     // good ones, so they are kept, and the caller retries with them.
     if (error instanceof RefreshRaceError) throw error;
     // A refresh that cannot succeed should not leave a stale cookie behind to
-    // be retried on every subsequent request.
-    clearAuthCookies(res);
+    // be retried on every subsequent request. Only a refusal (401) means that:
+    // a server or database failure (500, "max clients reached") keeps the
+    // cookies, so the session survives and the next try renews it, rather than
+    // every signed-in person being sent to the sign-in page at once.
+    if (error instanceof UnauthorizedError && !(error instanceof StaleRefreshError)) clearAuthCookies(res);
     throw error;
   }
 });

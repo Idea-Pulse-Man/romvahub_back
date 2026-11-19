@@ -14,6 +14,22 @@ function prismaErrorCode(error: unknown): string | null {
   return null;
 }
 
+/**
+ * Prisma's connection failures (P1001 can't reach, P1002 timed out, P1017
+ * closed, P2024 no connection free in time, P2028 transaction could not start)
+ * and the pooler's and driver's own words for the same.
+ */
+const DB_UNAVAILABLE_CODES = new Set(['P1001', 'P1002', 'P1017', 'P2024', 'P2028']);
+const DB_UNAVAILABLE_TEXT =
+  /EMAXCONN|max clients reached|too many (clients|connections)|remaining connection slots|Can't reach database|Connection terminated|connection (timeout|refused)|timeout exceeded when trying to connect|Timed out fetching a new connection|Unable to start a transaction|Server has closed the connection|ECONNRESET|ECONNREFUSED|ETIMEDOUT/i;
+
+function isDatabaseUnavailable(error: unknown, prismaCode: string | null): boolean {
+  if (prismaCode && DB_UNAVAILABLE_CODES.has(prismaCode)) return true;
+  const text = [error instanceof Error ? error.message : '', (error as { cause?: { message?: string } })?.cause?.message ?? '']
+    .join(' ');
+  return DB_UNAVAILABLE_TEXT.test(text);
+}
+
 export const notFoundHandler: RequestHandler = (req, _res, next) => {
   next(new NotFoundError(`No route matches ${req.method} ${req.originalUrl}`));
 };
@@ -70,6 +86,21 @@ export const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
   if (prismaCode === 'P2025') {
     res.status(404).json({
       error: { code: 'NOT_FOUND', message: 'Resource not found.' },
+    });
+    return;
+  }
+
+  // The database out of reach or out of connections: not a bug, and over in a
+  // few minutes. Said as such (503), so a sign-in page, the agent's log and the
+  // extensions show the real reason instead of "Something went wrong", and the
+  // callers that retry (the agent, the site's session renewal) know to.
+  if (isDatabaseUnavailable(error, prismaCode)) {
+    logger.error({ err: error }, 'Database unavailable');
+    res.status(503).json({
+      error: {
+        code: 'DATABASE_UNAVAILABLE',
+        message: "romva.space's database is busy or unreachable. Try again in a minute.",
+      },
     });
     return;
   }

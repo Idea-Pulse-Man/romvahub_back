@@ -454,6 +454,15 @@ async function resolveProfileFiling(
   requestedProfileId: string | undefined,
   requestedUserId: string | undefined,
 ): Promise<{ userId: string; profileId: string | null }> {
+  // A Profile token (the HiringCafe scraper): always its own Profile, filed
+  // under the Profile's account, whatever the payload names.
+  if (actor.profileId) {
+    if (requestedProfileId && requestedProfileId !== actor.profileId) {
+      throw new NotFoundError('No such profile to file this application under.');
+    }
+    return { userId: actor.id, profileId: actor.profileId };
+  }
+
   if (!requestedProfileId) {
     return { userId: await resolveOwner(actor, requestedUserId), profileId: null };
   }

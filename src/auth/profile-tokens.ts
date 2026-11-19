@@ -81,13 +81,17 @@ export async function resolveProfileToken(token: string): Promise<ProfileTokenId
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 
-/** The only routes a Profile token may call: what the extension and the agent need. */
+/** The only routes a Profile token may call: what the extensions (Apply, HiringCafe scraper) and the agent need. */
 const TOKEN_ROUTES: Array<{ method: string; path: RegExp }> = [
   { method: 'GET', path: /^\/api\/auth\/me$/ },
   // The extension: the jobs to fill, what to fill in, and marking one Applied.
   { method: 'GET', path: new RegExp(`^/api/auto-make/apply/(next|all|${UUID})$`, 'i') },
   { method: 'GET', path: new RegExp(`^/api/bids/${UUID}$`, 'i') },
   { method: 'POST', path: /^\/api\/bids\/bulk\/status$/ },
+  // The HiringCafe scraper: a job it found, filed as an application of the token's
+  // Profile, after a look at that Profile's Avoid lists (its own Profile only).
+  { method: 'POST', path: /^\/api\/bids$/ },
+  { method: 'GET', path: new RegExp(`^/api/profiles/${UUID}/avoid$`, 'i') },
   // The Resume agent: the make queue.
   { method: 'POST', path: /^\/api\/auto-make\/(claim|heartbeat|release-held)$/ },
   { method: 'POST', path: new RegExp(`^/api/auto-make/jobs/${UUID}/(check-resume|resume|cover-letter|release)$`, 'i') },

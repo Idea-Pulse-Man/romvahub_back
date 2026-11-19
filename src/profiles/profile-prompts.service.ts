@@ -76,6 +76,11 @@ export interface ProfileResumeSettings {
 
 /** An admin reaches every Profile; a User only those shared with them. */
 export async function assertProfileAccess(actor: Actor, profileId: string): Promise<void> {
+  // A Profile token: its own Profile only.
+  if (actor.profileId) {
+    if (actor.profileId !== profileId) throw new NotFoundError('No such profile.');
+    return;
+  }
   const profile = await prisma.profile.findUnique({ where: { id: profileId }, select: { userId: true } });
   if (!profile) throw new NotFoundError('No such profile.');
   if (!isAdmin(actor) && profile.userId !== actor.id && !(await isSharedWith(actor.id, profileId))) {

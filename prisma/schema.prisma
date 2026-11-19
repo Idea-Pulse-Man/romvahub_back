@@ -213,7 +213,7 @@ model Bid {
 
   /// When the job board says the posting went up, as the scraper read it.
   /// Null when the source did not show one. A Draft whose posting is more
-  /// than a day old is marked Expired at the start of each day — see
+  /// than 2 days old is marked Expired at the start of each day — see
   /// `src/bids/draft-expiry.ts`.
   postedAt DateTime?
 

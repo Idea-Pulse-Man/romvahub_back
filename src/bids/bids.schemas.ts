@@ -51,7 +51,7 @@ export const CreateBidSchema = z.object({
   jobDescription: blankable(z.string().max(50_000)),
   /**
    * When the job board says the posting went up — an ISO-8601 instant. Sent by
-   * the scraper; a Draft more than a day past it is expired each morning.
+   * the scraper; a Draft more than 2 days past it is expired each morning.
    */
   postedAt: blankable(z.iso.datetime({ offset: true })),
   rateType: blankable(RateTypeSchema),

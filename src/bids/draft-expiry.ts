@@ -5,7 +5,7 @@ import { logger } from '../logger.js';
  * Expire stale Drafts once a day.
  *
  * At the start of each day (US Eastern, the same calendar `bidDate` uses), a
- * Draft whose posting went up more than a day ago is marked Expired: a job
+ * Draft whose posting went up more than 2 days ago is marked Expired: a job
  * left that long has usually had its applicants, and applying late is wasted
  * work. Only Drafts are touched; anything already applied to, skipped or
  * closed keeps its status, and a Draft with no known posting time is left
@@ -19,7 +19,7 @@ import { logger } from '../logger.js';
 
 const TIME_ZONE = 'America/New_York';
 const CHECK_EVERY_MS = 5 * 60 * 1000;
-const MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000;
 
 function easternDate(now: Date): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -30,7 +30,7 @@ function easternDate(now: Date): string {
   }).format(now);
 }
 
-/** Mark every Draft posted more than a day before `now` as Expired. Returns how many. */
+/** Mark every Draft posted more than 2 days before `now` as Expired. Returns how many. */
 export async function expireStaleDrafts(now: Date = new Date()): Promise<number> {
   const cutoff = new Date(now.getTime() - MAX_AGE_MS);
   const { count } = await prisma.bid.updateMany({
@@ -52,7 +52,7 @@ export function startDraftExpiry(): void {
     try {
       const count = await expireStaleDrafts(now);
       lastRunDate = today;
-      logger.info({ count, date: today }, 'Expired Drafts posted more than a day ago');
+      logger.info({ count, date: today }, 'Expired Drafts posted more than 2 days ago');
     } catch (err) {
       // Left unset so the next check tries again.
       logger.error({ err }, 'Could not expire stale Drafts');

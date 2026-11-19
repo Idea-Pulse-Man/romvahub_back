@@ -1,5 +1,5 @@
 import { prisma } from '../prisma.js';
-import { RefreshRaceError, UnauthorizedError } from '../http/errors.js';
+import { RefreshRaceError, StaleRefreshError, UnauthorizedError } from '../http/errors.js';
 import type { UserRole } from './auth.schemas.js';
 import { enrichLoginContext } from './login-enrichment.js';
 import { hashPassword, verifyPassword } from './password.js';
@@ -223,13 +223,15 @@ async function completeLogin(
 }
 
 /** How long a just-rotated refresh token is taken for a race between tabs, not theft. */
-const REFRESH_REUSE_GRACE_MS = 30_000;
+const REFRESH_REUSE_GRACE_MS = 2 * 60_000;
 
 /**
  * Rotates a refresh token: the presented token is revoked and a fresh one
- * issued. Presenting an already-revoked token means it was captured and
- * replayed, so every token in that user's family is revoked and the session
- * ends.
+ * issued. An already-rotated token presented again is refused (401) on its
+ * own: the browser that sent it may already hold the newer cookie (the Resume
+ * Maker extension renews with the same cookies as the site, on its own clock).
+ * It used to revoke every session of the account as a stolen token, which
+ * signed the person out on every browser and computer at once.
  */
 export async function refresh(presentedToken: string): Promise<AuthResult> {
   const tokenHash = hashRefreshToken(presentedToken);
@@ -248,12 +250,13 @@ export async function refresh(presentedToken: string): Promise<AuthResult> {
     throw new RefreshRaceError();
   }
 
+  if (stored.revokedAt && stored.rotatedAt) {
+    // Spent a while ago: this request is refused, the cookies are left alone
+    // (a newer one may be in place), and no other session is touched.
+    throw new StaleRefreshError();
+  }
   if (stored.revokedAt) {
-    await prisma.refreshToken.updateMany({
-      where: { userId: stored.userId, revokedAt: null },
-      data: { revokedAt: new Date() },
-    });
-    throw new UnauthorizedError('Refresh token has already been used. Please sign in again.');
+    throw new UnauthorizedError('This session was signed out. Please sign in again.');
   }
 
   if (stored.expiresAt <= new Date()) {
@@ -272,14 +275,25 @@ export async function refresh(presentedToken: string): Promise<AuthResult> {
 
   // Claimed atomically: of two refreshes racing on the same token, one wins
   // and the other is told it lost (and retries), rather than both rotating.
+  // The claim and the new token are one transaction: when making the new one
+  // fails (the database busy), the old one is not spent either, and still works
+  // on the next try instead of the session being lost.
   const now = new Date();
-  const { count } = await prisma.refreshToken.updateMany({
-    where: { id: stored.id, revokedAt: null },
-    data: { revokedAt: now, rotatedAt: now },
+  const next = createRefreshToken();
+  await prisma.$transaction(async (tx) => {
+    const { count } = await tx.refreshToken.updateMany({
+      where: { id: stored.id, revokedAt: null },
+      data: { revokedAt: now, rotatedAt: now },
+    });
+    if (count === 0) throw new RefreshRaceError();
+    await tx.refreshToken.create({ data: { userId: stored.userId, tokenHash: next.tokenHash, expiresAt: next.expiresAt } });
   });
-  if (count === 0) throw new RefreshRaceError();
 
-  return { user: toAuthUser(stored.user), ...(await issueTokens(stored.user)) };
+  return {
+    user: toAuthUser(stored.user),
+    accessToken: signAccessToken({ sub: stored.user.id, email: stored.user.email, role: toApiRole(stored.user.role) }),
+    refreshToken: next.token,
+  };
 }
 
 /** Revokes the presented token. Logging out twice is not an error. */

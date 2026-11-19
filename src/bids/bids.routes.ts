@@ -84,7 +84,7 @@ bidsRouter.get('/version', validate({ query: BidsVersionQuerySchema }), async (r
 bidsRouter.post('/', validate({ body: CreateBidSchema }), async (req, res) => {
   const body = (req as ValidatedRequest<CreateBidInput>).valid.body;
   const actor = currentActor(req);
-  // A new Draft at a company of more than 500 employees (the scraper's
+  // A new Draft at a company of more than 5,000 employees (the scraper's
   // "Size:" line in the notes) is filed as Skip — and so never made.
   if (body.status === 'Draft' && isLargeCompany(companySizeFromNotes(body.notes))) {
     body.status = 'Skip';

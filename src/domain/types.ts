@@ -231,6 +231,10 @@ export interface Bid {
   steps?: InterviewStep[];
   /** When the application was archived from the Pipeline board; absent while active. */
   archivedAt?: string;
+  /** When the application was first sent (moved past Draft); absent while a Draft. */
+  appliedAt?: string;
+  /** When its Resume was first stored; absent while it has none. */
+  resumeMadeAt?: string;
   candidate?: BidCandidate;
   createdAt: string;
   updatedAt: string;

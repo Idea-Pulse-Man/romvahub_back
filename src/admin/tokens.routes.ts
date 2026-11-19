@@ -10,16 +10,18 @@ import { prisma } from '../prisma.js';
  * Profile tokens, made and revoked by the Super Admin (the Tokens page).
  *
  *   GET    /api/admin/tokens       → every token: its Profile, label, when made and last used
- *   POST   /api/admin/tokens       { profileId, label? } → the new token, shown this once
+ *   POST   /api/admin/tokens       { profileId, label?, expiresInDays } → the new token, shown this once
  *   DELETE /api/admin/tokens/:id   → revoked: it stops working at once
  *
  * The token goes into the Chrome extension's or the Resume agent's settings;
- * they then act as that Profile, with no sign-in.
+ * they then act as that Profile, with no sign-in, until it expires or is revoked.
  */
 
 const CreateTokenSchema = z.object({
   profileId: z.uuid(),
   label: z.string().trim().max(100).default(''),
+  /** How long it works: 7 days to a year. */
+  expiresInDays: z.coerce.number().int().min(1).max(365).default(90),
 });
 const TokenIdParamsSchema = z.object({ id: z.uuid() });
 
@@ -32,6 +34,7 @@ const tokenSelect = {
   prefix: true,
   createdAt: true,
   lastUsedAt: true,
+  expiresAt: true,
   revokedAt: true,
   profile: { select: { id: true, firstName: true, lastName: true } },
   createdBy: { select: { email: true } },
@@ -43,6 +46,7 @@ type TokenRow = {
   prefix: string;
   createdAt: Date;
   lastUsedAt: Date | null;
+  expiresAt: Date | null;
   revokedAt: Date | null;
   profile: { id: string; firstName: string; lastName: string };
   createdBy: { email: string } | null;
@@ -60,6 +64,7 @@ function toApi(row: TokenRow) {
     createdBy: row.createdBy?.email ?? null,
     createdAt: row.createdAt.toISOString(),
     lastUsedAt: row.lastUsedAt?.toISOString() ?? null,
+    expiresAt: row.expiresAt?.toISOString() ?? null,
     revokedAt: row.revokedAt?.toISOString() ?? null,
   };
 }
@@ -77,12 +82,19 @@ adminTokensRouter.get('/', async (_req, res) => {
 });
 
 adminTokensRouter.post('/', validate({ body: CreateTokenSchema }), async (req, res) => {
-  const { profileId, label } = (req as ValidatedRequest<CreateTokenInput>).valid.body;
+  const { profileId, label, expiresInDays } = (req as ValidatedRequest<CreateTokenInput>).valid.body;
   const profile = await prisma.profile.findUnique({ where: { id: profileId }, select: { id: true } });
   if (!profile) throw new NotFoundError('No such Profile.');
   const { token, tokenHash, prefix } = newProfileToken();
   const row = await prisma.profileToken.create({
-    data: { profileId, label, tokenHash, prefix, createdById: currentUserId(req) },
+    data: {
+      profileId,
+      label,
+      tokenHash,
+      prefix,
+      createdById: currentUserId(req),
+      expiresAt: new Date(Date.now() + expiresInDays * 24 * 60 * 60_000),
+    },
     select: tokenSelect,
   });
   res.status(201).json({ token, item: toApi(row) });

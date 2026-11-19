@@ -12,8 +12,12 @@ import { retryAllNow } from './auto-make-queue.js';
  * API) and the computer that runs the maker (`auto-make-watcher.ts`).
  */
 
-/** A maker that has not checked in for this long is reported as not running. */
-const ONLINE_WITHIN_MS = 2 * 60_000;
+/**
+ * A maker that has not checked in for this long is reported as not running.
+ * An idle Resume agent asks at most every 3 minutes (it backs off when there is
+ * nothing to make), so this leaves room for one late answer.
+ */
+const ONLINE_WITHIN_MS = 4 * 60_000;
 
 export interface AutoMakeStatus {
   /** Start resume / Stop: the workers make Resumes and cover letters. */

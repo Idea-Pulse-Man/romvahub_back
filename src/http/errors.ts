@@ -62,6 +62,18 @@ export class ConflictError extends AppError {
 }
 
 /**
+ * A refresh token presented again moments after it was rotated: two tabs (or
+ * two requests) renewed the session at once, and the other one already won.
+ * Not theft, so nothing is revoked and the cookies are left alone; the client
+ * retries its request with the cookie the winner set.
+ */
+export class RefreshRaceError extends AppError {
+  constructor() {
+    super(409, 'REFRESH_RACE', 'The session was just renewed by another tab. Retry the request.');
+  }
+}
+
+/**
  * The profile already has this application: the same posting (by link) or
  * another posting at the same employer. romva.space refuses it rather than
  * filing a second one, whoever sends it — the website's form or the scraper

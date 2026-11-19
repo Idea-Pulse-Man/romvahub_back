@@ -1,5 +1,5 @@
 import { prisma } from '../prisma.js';
-import { UnauthorizedError } from '../http/errors.js';
+import { RefreshRaceError, UnauthorizedError } from '../http/errors.js';
 import type { UserRole } from './auth.schemas.js';
 import { enrichLoginContext } from './login-enrichment.js';
 import { hashPassword, verifyPassword } from './password.js';
@@ -222,6 +222,9 @@ async function completeLogin(
   return { user: toAuthUser(user), ...(await issueTokens(user)) };
 }
 
+/** How long a just-rotated refresh token is taken for a race between tabs, not theft. */
+const REFRESH_REUSE_GRACE_MS = 30_000;
+
 /**
  * Rotates a refresh token: the presented token is revoked and a fresh one
  * issued. Presenting an already-revoked token means it was captured and
@@ -237,6 +240,13 @@ export async function refresh(presentedToken: string): Promise<AuthResult> {
   });
 
   if (!stored) throw new UnauthorizedError('Invalid refresh token.');
+
+  // Used again within moments of being rotated: two tabs renewing at once
+  // (both saw the access token expire), not a stolen token. The winner's new
+  // cookie is already in the browser, so the loser just retries.
+  if (stored.revokedAt && stored.rotatedAt && Date.now() - stored.rotatedAt.getTime() < REFRESH_REUSE_GRACE_MS) {
+    throw new RefreshRaceError();
+  }
 
   if (stored.revokedAt) {
     await prisma.refreshToken.updateMany({
@@ -260,10 +270,14 @@ export async function refresh(presentedToken: string): Promise<AuthResult> {
     );
   }
 
-  await prisma.refreshToken.update({
-    where: { id: stored.id },
-    data: { revokedAt: new Date() },
+  // Claimed atomically: of two refreshes racing on the same token, one wins
+  // and the other is told it lost (and retries), rather than both rotating.
+  const now = new Date();
+  const { count } = await prisma.refreshToken.updateMany({
+    where: { id: stored.id, revokedAt: null },
+    data: { revokedAt: now, rotatedAt: now },
   });
+  if (count === 0) throw new RefreshRaceError();
 
   return { user: toAuthUser(stored.user), ...(await issueTokens(stored.user)) };
 }

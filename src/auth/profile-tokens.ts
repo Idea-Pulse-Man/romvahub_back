@@ -9,8 +9,9 @@ import { prisma } from '../prisma.js';
  * The Super Admin makes one per Profile (Tokens page). It is sent as
  * `Authorization: Bearer rmv_…` and acts as that Profile only: the requests
  * it makes see that Profile's applications and no others, and it may call only
- * the routes the extension and the agent use (`TOKEN_ROUTES`). It never
- * expires; it works until revoked. Only its SHA-256 digest is stored.
+ * the routes the extension and the agent use (`TOKEN_ROUTES`). It works
+ * until it expires (chosen when it is made) or is revoked. Only its SHA-256
+ * digest is stored.
  */
 
 export const PROFILE_TOKEN_PREFIX = 'rmv_';
@@ -46,6 +47,7 @@ export async function resolveProfileToken(token: string): Promise<ProfileTokenId
     select: {
       id: true,
       revokedAt: true,
+      expiresAt: true,
       lastUsedAt: true,
       createdById: true,
       profile: {
@@ -60,6 +62,11 @@ export async function resolveProfileToken(token: string): Promise<ProfileTokenId
   });
   if (!row || row.revokedAt) {
     throw new UnauthorizedError('This Romva token was revoked or does not exist. Ask the Super Admin for a new one.');
+  }
+  if (row.expiresAt && row.expiresAt <= new Date()) {
+    throw new UnauthorizedError(
+      `This Romva token expired on ${row.expiresAt.toISOString().slice(0, 10)}. Ask the Super Admin for a new one.`,
+    );
   }
   const userId = row.profile.userId ?? row.profile.shares[0]?.userId ?? row.createdById;
   if (!userId) throw new UnauthorizedError('This Romva token’s Profile has no account. Ask the Super Admin.');
@@ -98,12 +105,14 @@ export function assertTokenRoute(req: Request): void {
 }
 
 /** For `GET /api/auth/me` with a token: which Profile it acts as. */
-export async function describeToken(tokenId: string): Promise<{ id: string; label: string; profile: { id: string; name: string } }> {
+export async function describeToken(
+  tokenId: string,
+): Promise<{ id: string; label: string; expiresAt: string | null; profile: { id: string; name: string } }> {
   const row = await prisma.profileToken.findUnique({
     where: { id: tokenId },
-    select: { id: true, label: true, profile: { select: { id: true, firstName: true, lastName: true } } },
+    select: { id: true, label: true, expiresAt: true, profile: { select: { id: true, firstName: true, lastName: true } } },
   });
   if (!row) throw new UnauthorizedError('This Romva token was revoked or does not exist.');
   const name = [row.profile.firstName, row.profile.lastName].filter(Boolean).join(' ') || 'Profile';
-  return { id: row.id, label: row.label, profile: { id: row.profile.id, name } };
+  return { id: row.id, label: row.label, expiresAt: row.expiresAt?.toISOString() ?? null, profile: { id: row.profile.id, name } };
 }

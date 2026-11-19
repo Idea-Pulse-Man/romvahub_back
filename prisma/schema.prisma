@@ -137,6 +137,9 @@ model RefreshToken {
   tokenHash String    @unique
   expiresAt DateTime
   revokedAt DateTime?
+  /// Set when the token was swapped for a new one (not on logout or a revoke):
+  /// presented again within seconds of this, it is two tabs racing, not theft.
+  rotatedAt DateTime?
   createdAt DateTime  @default(now())
 
   @@index([userId])
@@ -145,7 +148,7 @@ model RefreshToken {
 
 /// A Profile token: what the Chrome extension and the Resume agent sign in
 /// with instead of an email and password. It acts as its Profile only (that
-/// Profile's applications, nothing else), never expires, and works until
+/// Profile's applications, nothing else), and works until it expires or is
 /// revoked. Only the SHA-256 digest is stored; the token is shown once.
 model ProfileToken {
   id          String    @id @default(uuid()) @db.Uuid
@@ -159,6 +162,8 @@ model ProfileToken {
   createdBy   User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
   createdAt   DateTime  @default(now())
   lastUsedAt  DateTime?
+  /// After this the token no longer works (null: a token made before expiry existed).
+  expiresAt   DateTime?
   revokedAt   DateTime?
 
   @@index([profileId])

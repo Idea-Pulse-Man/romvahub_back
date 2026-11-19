@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { prisma } from '../src/prisma.js';
 import { createUser, request } from './helpers.js';
 
 interface HasHeaders {
@@ -111,7 +112,20 @@ describe('POST /api/auth/refresh', () => {
     expect(second).toBeTruthy();
     expect(second).not.toBe(first);
 
-    // Replaying the spent token is the signature of a stolen cookie.
+    // Within moments of the rotation, a replay is two tabs renewing at once:
+    // told to retry, nothing revoked, and the cookies are left alone.
+    const race = await request()
+      .post('/api/auth/refresh')
+      .set('Cookie', [`ge_refresh=${first}`])
+      .expect(409);
+    expect(race.body.error.code).toBe('REFRESH_RACE');
+    expect(readCookie(race, 'ge_refresh')).toBeNull();
+
+    // Later than that, replaying the spent token is the signature of a stolen cookie.
+    await prisma.refreshToken.updateMany({
+      where: { userId: user.id, rotatedAt: { not: null } },
+      data: { rotatedAt: new Date(Date.now() - 60_000) },
+    });
     await request()
       .post('/api/auth/refresh')
       .set('Cookie', [`ge_refresh=${first}`])

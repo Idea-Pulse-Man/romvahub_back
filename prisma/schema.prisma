@@ -41,7 +41,7 @@ enum BidStatus {
   /// Closed for any reason the other statuses do not name.
   OTHER                   @map("Other")
   /// Not worth applying to — set automatically for a company with more than
-  /// 500 employees. No Resume or cover letter is made for it.
+  /// 5,000 employees. No Resume or cover letter is made for it.
   SKIP                    @map("Skip")
 
   @@map("bid_status")
@@ -346,6 +346,17 @@ model Bid {
   /// Set when the application is archived from the Pipeline board: kept, but
   /// off the active board. Null for every active application.
   archivedAt DateTime?
+
+  /// When the application was first sent — moved past Draft. `bidDate` is the
+  /// day the job was saved and stays put when a Draft is applied to, so this is
+  /// what "bids sent today" is counted from. Cleared when it goes back to Draft
+  /// or Skip; kept through every later stage.
+  appliedAt DateTime?
+
+  /// When a Resume was first stored for this application — generated or
+  /// synced up from the folder. What "resumes made today" is counted from.
+  /// Cleared when the Resume is deleted, so a remake counts on the day it is made.
+  resumeMadeAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

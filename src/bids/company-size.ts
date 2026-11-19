@@ -1,15 +1,15 @@
 /**
  * Whether a new application is at a company too large to bother with — more
- * than 500 employees (SKIP_COMPANY_SIZE_OVER) — so it is filed as "Skip" and
+ * than 5,000 employees (SKIP_COMPANY_SIZE_OVER) — so it is filed as "Skip" and
  * no Resume or cover letter is made for it.
  *
  * The size comes from the application's notes, where the HiringCafe scraper
  * writes it as a line of its own: `Size: 1001-5000`. Sizes are ranges as often
- * as numbers, so a range counts by its lower bound: "501-1000" is over 500,
- * "201-500" is not. "500+" and "> 500" mean more than 500.
+ * as numbers, so a range counts by its lower bound: "5001-10000" is over 5,000,
+ * "1001-5000" is not. "5000+" and "> 5000" mean more than 5,000.
  */
 
-const DEFAULT_LIMIT = 500;
+const DEFAULT_LIMIT = 5_000;
 
 function limit(): number {
   const configured = Number(process.env.SKIP_COMPANY_SIZE_OVER);
@@ -36,7 +36,7 @@ export function parseCompanySize(size: string): { min: number; openEnded: boolea
   return { min, openEnded };
 }
 
-/** More than the limit (500 by default)? Unknown sizes are never skipped. */
+/** More than the limit (5,000 by default)? Unknown sizes are never skipped. */
 export function isLargeCompany(size: string | null | undefined): boolean {
   if (!size) return false;
   const parsed = parseCompanySize(size);

@@ -1,5 +1,5 @@
 import { Router, type Request } from 'express';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { env } from '../env.js';
 import { RefreshRaceError, StaleRefreshError, UnauthorizedError } from '../http/errors.js';
 import { validate, type ValidatedRequest } from '../http/validate.js';
@@ -21,16 +21,23 @@ export const authRouter: Router = Router();
  */
 const credentialLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  // The Chrome scraper re-authenticates when tokens expire or settings change;
-  // 10 was easy to burn through while testing. Production still needs a ceiling.
-  limit: env.NODE_ENV === 'production' ? 30 : 200,
+  // Wrong passwords (or authenticator codes) only, per account and address: a
+  // team behind one office connection all signing in again at once used to
+  // share one budget of 30 and lock everyone out for minutes, right ones too.
+  limit: env.NODE_ENV === 'production' ? 10 : 200,
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => {
+    const body = (req.body ?? {}) as { email?: unknown; challengeId?: unknown };
+    const who = typeof body.email === 'string' ? body.email.trim().toLowerCase() : String(body.challengeId ?? '');
+    return `${ipKeyGenerator(req.ip ?? '')}|${who}`;
+  },
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   skip: () => env.NODE_ENV === 'test',
   message: {
     error: {
       code: 'TOO_MANY_REQUESTS',
-      message: 'Too many login attempts. Please try again in a few minutes.',
+      message: 'Too many wrong passwords for this account. Please try again in 15 minutes.',
     },
   },
 });

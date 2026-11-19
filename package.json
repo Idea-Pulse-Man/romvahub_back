@@ -34,6 +34,7 @@
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
     "@sparticuz/chromium": "^149.0.0",
+    "@vercel/functions": "^3",
     "@xmldom/xmldom": "^0.9.12",
     "cheerio": "^1.2.0",
     "cookie-parser": "^1.4.7",

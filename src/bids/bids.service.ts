@@ -124,6 +124,17 @@ function parsePostedAt(value: string | undefined): Date | null {
   return at > now ? now : at;
 }
 
+/**
+ * `appliedAt` for an application moving to `status`: kept once set, set now
+ * the first time it is sent, cleared when it goes back to Draft or Skip.
+ * Expired closes a Draft automatically, so it leaves the value as it was.
+ */
+function appliedAtFor(status: BidStatus, current: Date | null, now = new Date()): Date | null {
+  if (status === 'Draft' || status === 'Skip') return null;
+  if (status === 'Expired') return current;
+  return current ?? now;
+}
+
 /** Scalar columns shared by create and update. Only defined keys are emitted. */
 function toScalarData(input: UpdateBidInput): PrismaTypes.BidUncheckedUpdateInput {
   const data: PrismaTypes.BidUncheckedUpdateInput = {};
@@ -597,10 +608,12 @@ export async function createBid(actor: Actor, input: CreateBidInput): Promise<Bi
       rateAmount: input.rateAmount ?? null,
       bidDate: parseDateOnly(input.bidDate),
       status: toDbStatus(input.status),
+      appliedAt: appliedAtFor(input.status, null),
       followUpDate: input.followUpDate ? parseDateOnly(input.followUpDate) : null,
       resumeVersion: input.resumeVersion ?? null,
       notes: input.notes ?? null,
       resumeDocument: input.resumeDocument ?? PrismaTypes.DbNull,
+      resumeMadeAt: input.resumeDocument ? new Date() : null,
       coverLetterDocument: input.coverLetterDocument ?? PrismaTypes.DbNull,
       applicationChat: input.applicationChat?.length
         ? input.applicationChat
@@ -671,9 +684,21 @@ export async function updateBid(
       });
     }
 
+    const data = toScalarData(input);
+    if (input.status !== undefined) data.appliedAt = appliedAtFor(nextStatus, existing.appliedAt);
+    if ('resumeDocument' in input) {
+      // A Resume stored now counts today unless one was already there; taking
+      // the document away clears it unless synced files are still the Resume.
+      data.resumeMadeAt = input.resumeDocument
+        ? (existing.resumeMadeAt ?? new Date())
+        : existing.resumeFiles.length > 0
+          ? existing.resumeMadeAt
+          : null;
+    }
+
     return tx.bid.update({
       where: { id: bidId },
-      data: toScalarData(input),
+      data,
       include: bidInclude,
     });
   });
@@ -797,7 +822,10 @@ export async function replaceResumeFiles(
       });
     }
     // The Resume changed, so the application did: the version poll must see it.
-    await tx.bid.update({ where: { id: existing.id }, data: { updatedAt: new Date() } });
+    await tx.bid.update({
+      where: { id: existing.id },
+      data: { updatedAt: new Date(), ...(existing.resumeMadeAt ? {} : { resumeMadeAt: new Date() }) },
+    });
     // Two files of ~100 KB each over a remote pooler can take more than
     // Prisma's default 5s; past it the whole save was thrown away.
   }, { timeout: 30_000, maxWait: 10_000 });
@@ -832,7 +860,11 @@ export async function removeResumeFiles(actor: Actor, bidId: string): Promise<Bi
   const existing = await findRowOrThrow(actor, bidId);
   await prisma.$transaction([
     prisma.bidResumeFile.deleteMany({ where: { bidId: existing.id } }),
-    prisma.bid.update({ where: { id: existing.id }, data: { updatedAt: new Date() } }),
+    prisma.bid.update({
+      where: { id: existing.id },
+      // With no generated document behind them, the files were the Resume.
+      data: { updatedAt: new Date(), ...(existing.resumeDocument === null ? { resumeMadeAt: null } : {}) },
+    }),
   ]);
   return getBid(actor, existing.id);
 }
@@ -858,7 +890,7 @@ export async function deleteResume(actor: Actor, bidId: string): Promise<Bid> {
     prisma.bidResumeFile.deleteMany({ where: { bidId: existing.id } }),
     prisma.bid.update({
       where: { id: existing.id },
-      data: { resumeDocument: PrismaTypes.DbNull, updatedAt: new Date() },
+      data: { resumeDocument: PrismaTypes.DbNull, resumeMadeAt: null, updatedAt: new Date() },
     }),
     forgetAutoMakeFailures(existing.id),
   ]);
@@ -1091,10 +1123,18 @@ export async function bulkUpdateStatus(
       });
     }
 
+    const unsent = input.status === 'Draft' || input.status === 'Skip';
     await tx.bid.updateMany({
       where: { id: { in: ownedIds } },
-      data: { status: stage, updatedAt: new Date() },
+      data: { status: stage, updatedAt: new Date(), ...(unsent ? { appliedAt: null } : {}) },
     });
+    // Sent for the first time: stamped now. See `appliedAtFor`.
+    if (!unsent && input.status !== 'Expired') {
+      await tx.bid.updateMany({
+        where: { id: { in: ownedIds }, appliedAt: null },
+        data: { appliedAt: new Date() },
+      });
+    }
   });
 
   return { updated: ownedIds.length };

@@ -81,6 +81,11 @@ export async function importData(
           rateAmount: bid.rateAmount ?? null,
           bidDate: parseDateOnly(bid.bidDate),
           status: toDbStatus(bid.status),
+          // A backup does not say when it was sent; the day it was saved is the
+          // best record, as the migration that added the column took it.
+          appliedAt: ['Draft', 'Skip', 'Expired'].includes(bid.status)
+            ? null
+            : new Date(`${bid.bidDate}T12:00:00Z`),
           followUpDate: bid.followUpDate ? parseDateOnly(bid.followUpDate) : null,
           resumeVersion: bid.resumeVersion ?? null,
           notes: bid.notes ?? null,

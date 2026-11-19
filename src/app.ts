@@ -12,6 +12,7 @@ import { logger } from './logger.js';
 import { prisma } from './prisma.js';
 import { errorHandler, notFoundHandler } from './http/error-handler.js';
 import { adminUsersRouter } from './admin/users.routes.js';
+import { adminTokensRouter } from './admin/tokens.routes.js';
 import { adminProfilesRouter } from './admin/profiles.routes.js';
 import { aiConfigRouter } from './ai-config/ai-config.routes.js';
 import { authRouter } from './auth/auth.routes.js';
@@ -116,6 +117,7 @@ export function createApp(): Express {
   api.use('/admin/ai', aiConfigRouter);
   api.use('/admin/users', adminUsersRouter);
   api.use('/admin/profiles', adminProfilesRouter);
+  api.use('/admin/tokens', adminTokensRouter);
   app.use('/api', api);
 
   // The desktop app: this server also serves the built website, so the window

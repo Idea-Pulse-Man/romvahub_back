@@ -1,11 +1,12 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import rateLimit from 'express-rate-limit';
 import { env } from '../env.js';
 import { UnauthorizedError } from '../http/errors.js';
 import { validate, type ValidatedRequest } from '../http/validate.js';
-import { LoginSchema, type LoginInput } from './auth.schemas.js';
+import { LoginSchema, MfaVerifySchema, type LoginInput, type MfaVerifyInput } from './auth.schemas.js';
 import * as authService from './auth.service.js';
 import { REFRESH_COOKIE, clearAuthCookies, setAuthCookies } from './cookies.js';
+import * as profileTokens from './profile-tokens.js';
 import { currentUserId, requireAuth } from './require-auth.js';
 
 export const authRouter: Router = Router();
@@ -36,15 +37,28 @@ const credentialLimiter = rateLimit({
 
 authRouter.post('/login', credentialLimiter, validate({ body: LoginSchema }), async (req, res) => {
   const { email, password } = (req as ValidatedRequest<LoginInput>).valid.body;
-  const { user, accessToken, refreshToken } = await authService.login(email, password, {
-    ip: req.ip,
-    userAgent: req.get('user-agent'),
-    acceptLanguage: req.get('accept-language'),
-  });
-
+  const result = await authService.login(email, password, loginContext(req));
+  // The Super Admin: the password was right, and the authenticator code comes next.
+  if ('mfa' in result) {
+    res.json(result);
+    return;
+  }
+  const { user, accessToken, refreshToken } = result;
   setAuthCookies(res, accessToken, refreshToken);
   res.json({ user, accessToken, refreshToken });
 });
+
+/** The authenticator code for a sign-in `/login` answered with `{ mfa }`. */
+authRouter.post('/login/verify', credentialLimiter, validate({ body: MfaVerifySchema }), async (req, res) => {
+  const { challengeId, code } = (req as ValidatedRequest<MfaVerifyInput>).valid.body;
+  const { user, accessToken, refreshToken } = await authService.verifyMfa(challengeId, code, loginContext(req));
+  setAuthCookies(res, accessToken, refreshToken);
+  res.json({ user, accessToken, refreshToken });
+});
+
+function loginContext(req: Request): authService.LoginContext {
+  return { ip: req.ip, userAgent: req.get('user-agent'), acceptLanguage: req.get('accept-language') };
+}
 
 authRouter.post('/refresh', async (req, res) => {
   // Cookie first (website); JSON body next (extension / API clients that
@@ -82,5 +96,10 @@ authRouter.post('/logout', async (req, res) => {
 });
 
 authRouter.get('/me', requireAuth, async (req, res) => {
+  // A Profile token (the extension, the agent): which Profile it acts as.
+  if (req.user?.profileId) {
+    res.json({ token: await profileTokens.describeToken(req.user.tokenId ?? '') });
+    return;
+  }
   res.json({ user: await authService.getUser(currentUserId(req)) });
 });

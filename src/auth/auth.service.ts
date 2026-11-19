@@ -4,11 +4,15 @@ import type { UserRole } from './auth.schemas.js';
 import { enrichLoginContext } from './login-enrichment.js';
 import { hashPassword, verifyPassword } from './password.js';
 import { createRefreshToken, hashRefreshToken, signAccessToken } from './tokens.js';
+import { newTotpSecret, otpauthUrl, verifyTotp } from './totp.js';
+import { decryptSecret, encryptSecret } from '../crypto/secret-box.js';
 
 export interface AuthUser {
   id: string;
   email: string;
   role: UserRole;
+  /** The Super Admin: also makes and revokes Profile tokens (the Tokens page). */
+  superAdmin: boolean;
   createdAt: string;
 }
 
@@ -33,12 +37,14 @@ function toAuthUser(user: {
   id: string;
   email: string;
   role: 'USER' | 'ADMIN';
+  superAdmin: boolean;
   createdAt: Date;
 }): AuthUser {
   return {
     id: user.id,
     email: user.email,
     role: toApiRole(user.role),
+    superAdmin: user.superAdmin,
     createdAt: user.createdAt.toISOString(),
   };
 }
@@ -81,7 +87,7 @@ export async function login(
   email: string,
   password: string,
   context: LoginContext = {},
-): Promise<AuthResult> {
+): Promise<AuthResult | MfaChallenge> {
   const normalizedEmail = email.trim().toLowerCase();
   const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
 
@@ -98,6 +104,98 @@ export async function login(
     );
   }
 
+  // The Super Admin signs in with an authenticator app too: no session until
+  // its code is given (POST /api/auth/login/verify). The first time, the app is
+  // set up from a new secret shown as a QR code.
+  if (user.superAdmin) return startMfa(user);
+
+  return completeLogin(user, context);
+}
+
+/** What the sign-in page needs to ask for the authenticator code. */
+export interface MfaChallenge {
+  mfa: {
+    challengeId: string;
+    /** The first sign-in: the app is set up from `secret` / `otpauthUrl` (the QR code). */
+    setup: boolean;
+    email: string;
+    secret?: string;
+    otpauthUrl?: string;
+  };
+}
+
+const MFA_TTL_MS = 10 * 60_000;
+const MFA_MAX_ATTEMPTS = 5;
+
+async function startMfa(user: { id: string; email: string; totpEnabledAt: Date | null; totpSecret: string | null }): Promise<MfaChallenge> {
+  const setup = !user.totpEnabledAt || !decryptSecret(user.totpSecret);
+  const secret = setup ? newTotpSecret() : undefined;
+  const challenge = await prisma.loginChallenge.create({
+    data: {
+      userId: user.id,
+      setup,
+      totpSecret: secret ? encryptSecret(secret) : null,
+      expiresAt: new Date(Date.now() + MFA_TTL_MS),
+    },
+  });
+  return {
+    mfa: {
+      challengeId: challenge.id,
+      setup,
+      email: user.email,
+      ...(secret ? { secret, otpauthUrl: otpauthUrl(secret, user.email) } : {}),
+    },
+  };
+}
+
+/** The authenticator code for a sign-in started by `login`: right, and the session is issued. */
+export async function verifyMfa(challengeId: string, code: string, context: LoginContext = {}): Promise<AuthResult> {
+  const challenge = await prisma.loginChallenge.findUnique({ where: { id: challengeId }, include: { user: true } });
+  const expired = 'This sign-in has expired. Enter your email and password again.';
+  if (!challenge || challenge.usedAt || challenge.expiresAt <= new Date()) throw new UnauthorizedError(expired);
+  if (challenge.attempts >= MFA_MAX_ATTEMPTS) {
+    throw new UnauthorizedError('Too many wrong codes. Enter your email and password again.');
+  }
+  const user = challenge.user;
+  if (user.status === 'SUSPENDED') {
+    throw new UnauthorizedError('This account has been suspended. Contact an administrator.');
+  }
+
+  const secret = decryptSecret(challenge.setup ? challenge.totpSecret : user.totpSecret);
+  if (!secret) throw new UnauthorizedError(expired);
+  const step = verifyTotp(secret, code, challenge.setup ? null : user.totpLastStep);
+  if (step === null) {
+    await prisma.loginChallenge.update({ where: { id: challenge.id }, data: { attempts: { increment: 1 } } });
+    const left = MFA_MAX_ATTEMPTS - challenge.attempts - 1;
+    throw new UnauthorizedError(
+      left > 0 ? `That code is not right. ${left} tr${left === 1 ? 'y' : 'ies'} left.` : 'Too many wrong codes. Enter your email and password again.',
+    );
+  }
+
+  // Used once, whatever happens next.
+  const { count } = await prisma.loginChallenge.updateMany({
+    where: { id: challenge.id, usedAt: null },
+    data: { usedAt: new Date() },
+  });
+  if (count === 0) throw new UnauthorizedError(expired);
+  await prisma.user.update({
+    where: { id: user.id },
+    data: {
+      totpLastStep: step,
+      ...(challenge.setup ? { totpSecret: challenge.totpSecret, totpEnabledAt: new Date() } : {}),
+    },
+  });
+  // Old challenges of this account are of no further use.
+  await prisma.loginChallenge.deleteMany({ where: { userId: user.id, OR: [{ usedAt: { not: null } }, { expiresAt: { lte: new Date() } }] } });
+
+  return completeLogin(user, context);
+}
+
+/** A sign-in that passed every check: recorded, and its session issued. */
+async function completeLogin(
+  user: { id: string; email: string; role: 'USER' | 'ADMIN'; superAdmin: boolean; createdAt: Date },
+  context: LoginContext,
+): Promise<AuthResult> {
   const details = await enrichLoginContext(context);
   await prisma.loginHistory.create({
     data: {

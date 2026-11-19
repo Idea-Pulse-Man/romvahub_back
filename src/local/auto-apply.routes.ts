@@ -6,7 +6,7 @@ import * as bidsService from '../bids/bids.service.js';
 import { bidAccessScope } from '../bids/bids.service.js';
 import { CoverLetterPayloadSchema } from '../cover-letter/cover-letter.schemas.js';
 import { renderCoverLetter } from '../cover-letter/cover-letter.service.js';
-import { NotFoundError } from '../http/errors.js';
+import { fromDbStatus } from '../domain/status.js';
 import { validate, type ValidatedRequest } from '../http/validate.js';
 import { prisma } from '../prisma.js';
 import { Prisma as PrismaTypes } from '../generated/prisma/client.js';
@@ -20,6 +20,8 @@ import { fileStem } from './make-steps.js';
  * themselves. Nothing here submits, screenshots or changes a status.
  *
  *   GET /api/auto-make/apply/next?limit=3&skip=<ids>  → applications ready to apply to
+ *   GET /api/auto-make/apply/all?limit=1000           → every application, any status
+ *                                                        (the extension's job search)
  *   GET /api/auto-make/apply/:bidId                   → what to fill in: the applicant,
  *                                                        the Resume and cover letter files,
  *                                                        and the job post and Resume text
@@ -41,8 +43,10 @@ const NextQuerySchema = z.object({
     .transform((value) => (value ? value.split(',').filter((id) => /^[0-9a-f-]{36}$/i.test(id)) : [])),
 });
 const BidParamsSchema = z.object({ bidId: z.string().uuid() });
+const AllQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(2000).default(1000) });
 
 type NextQuery = z.infer<typeof NextQuerySchema>;
+type AllQuery = z.infer<typeof AllQuerySchema>;
 type BidParams = z.infer<typeof BidParamsSchema>;
 
 /** A link worth typing into a form: not empty, and not just a site's front page ("https://www.linkedin.com/"). */
@@ -87,11 +91,36 @@ autoApplyRouter.get('/apply/next', validate({ query: NextQuerySchema }), async (
   });
 });
 
+/**
+ * Every application, whatever its status (Draft, Applied, Interview…), newest
+ * first: the list the extension's "Which job is this form for?" search looks in.
+ */
+autoApplyRouter.get('/apply/all', validate({ query: AllQuerySchema }), async (req, res) => {
+  const actor = currentActor(req);
+  const { limit } = (req as ValidatedRequest<unknown, unknown, AllQuery>).valid.query;
+  const rows = await prisma.bid.findMany({
+    where: bidAccessScope(actor),
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    take: limit,
+    select: { id: true, number: true, company: true, role: true, jobUrl: true, status: true, createdAt: true },
+  });
+  res.json({
+    jobs: rows.map((row) => ({
+      bidId: row.id,
+      number: row.number,
+      company: row.company,
+      role: row.role,
+      jobUrl: row.jobUrl ?? '',
+      status: fromDbStatus(row.status),
+      createdAt: row.createdAt.toISOString(),
+    })),
+  });
+});
+
 autoApplyRouter.get('/apply/:bidId', validate({ params: BidParamsSchema }), async (req, res) => {
   const actor = currentActor(req);
   const { bidId } = (req as ValidatedRequest<unknown, BidParams>).valid.params;
   const bid = await bidsService.getBid(actor, bidId);
-  if (!bid.jobUrl) throw new NotFoundError('This application has no job link.');
 
   const ownerUserId = bid.candidate?.userId ?? actor.id;
   const profile = bid.candidate?.profileId
@@ -130,7 +159,7 @@ autoApplyRouter.get('/apply/:bidId', validate({ params: BidParamsSchema }), asyn
     bidId: bid.id,
     company: bid.company,
     role: bid.role,
-    jobUrl: bid.jobUrl,
+    jobUrl: bid.jobUrl ?? '', // none: filled only in a tab you chose it for
     applicant: {
       firstName,
       lastName,

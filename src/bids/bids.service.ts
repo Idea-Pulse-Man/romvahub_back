@@ -201,6 +201,8 @@ export async function assertBidAccess(actor: Actor, bidId: string): Promise<void
 }
 
 export function bidAccessScope(actor: Actor): PrismaTypes.BidWhereInput {
+  // A Profile token (the extension, the agent): its Profile's applications only.
+  if (actor.profileId) return { profileId: actor.profileId };
   if (isAdmin(actor)) return {};
   return {
     OR: [

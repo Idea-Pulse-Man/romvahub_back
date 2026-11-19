@@ -11,6 +11,7 @@ import { renderCoverLetter } from '../cover-letter/cover-letter.service.js';
 import { settingsForMake } from '../profiles/profile-prompts.service.js';
 import mammoth from 'mammoth';
 import { parseJsonAnswer } from './json-answer.js';
+import { resumeAnswerProblems, resumeRetryMessage } from './resume-answer-check.js';
 
 /**
  * One application's Resume and cover letter, as four steps around the two
@@ -141,14 +142,59 @@ export interface FinishedResume {
   coverLetterMessage: string;
 }
 
+function profileName(job: MakeJob): string {
+  return [job.profile.firstName, job.profile.lastName].filter(Boolean).join(' ').trim();
+}
+
+/** What is missing from a parsed Resume answer for this Profile's template (empty: it can be built). */
+function problemsIn(job: MakeJob, json: object): Promise<string[]> {
+  return resumeAnswerProblems(json, {
+    templateId: job.prompts.templateId,
+    name: profileName(job) || undefined,
+    fallbackCompanies: job.profile.workExperience.map((entry) => entry.company),
+  });
+}
+
+export interface ResumeAnswerCheck {
+  /** What is wrong with the answer, in words; empty when the Resume can be built from it. */
+  problems: string[];
+  /** When something is wrong: the message for a second chat, the request with the problems spelled out. */
+  retryMessage?: string;
+}
+
+/**
+ * The step between ChatGPT's Resume answer and building the Resume: is the
+ * JSON readable, and does it fill the template's summary, skills, job titles
+ * and bullet points? Stores nothing and counts nothing — so a worker can ask
+ * ChatGPT once more, with what was missing, before handing the answer in.
+ */
+export async function checkResumeAnswer(job: MakeJob, answer: string): Promise<ResumeAnswerCheck> {
+  let json: unknown;
+  try {
+    json = parseJsonAnswer(answer);
+  } catch (error) {
+    const problems = [error instanceof Error ? error.message : 'the answer was not valid JSON'];
+    return { problems, retryMessage: resumeRetryMessage(job.resumeMessage, problems, null) };
+  }
+  const problems = await problemsIn(job, json as object);
+  return problems.length ? { problems, retryMessage: resumeRetryMessage(job.resumeMessage, problems, json) } : { problems };
+}
+
 /** ChatGPT's first answer → the Resume in the Profile's Word template, as Word and PDF, stored on the application. */
 export async function finishResume(job: MakeJob, answer: string): Promise<FinishedResume> {
   const json = parseJsonAnswer(answer);
 
+  // A Resume with an empty summary, no skills or a job without a title is
+  // never stored: refused like an unreadable answer (and tried again later).
+  const problems = await problemsIn(job, json as object);
+  if (problems.length) {
+    throw new BadGatewayError(`ChatGPT's Resume JSON is incomplete: ${problems.join('; ')}.`);
+  }
+
   // The app's own prompt answers in its structured shape; a Resume Maker
   // prompt (P.txt) in Maker JSON. Both go into the same Word template.
   const templateId = job.prompts.templateId;
-  const name = [job.profile.firstName, job.profile.lastName].filter(Boolean).join(' ').trim();
+  const name = profileName(job);
   const structured = AiResumeSchema.safeParse(json);
   let docx: Buffer;
   try {

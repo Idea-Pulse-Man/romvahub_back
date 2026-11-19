@@ -89,9 +89,10 @@ async function main(): Promise<void> {
         data: { email: normalizedEmail, role: 'ADMIN', passwordHash: passwordHash as string },
       });
 
-  // Sole-admin invariant: every other admin becomes a plain user.
+  // Sole-admin invariant: every other admin becomes a plain user — except the
+  // Super Admin (support@romva.space, `yarn super-admin`), who stays one.
   await prisma.user.updateMany({
-    where: { email: { not: normalizedEmail }, role: 'ADMIN' },
+    where: { email: { not: normalizedEmail }, role: 'ADMIN', superAdmin: false },
     data: { role: 'USER' },
   });
 

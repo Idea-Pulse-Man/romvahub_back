@@ -13,11 +13,13 @@ import type { UserRole } from './auth.schemas.js';
 export interface Actor {
   id: string;
   role: UserRole;
+  /** A Profile token's request: only this Profile's rows (see `bidAccessScope`). */
+  profileId?: string;
 }
 
 export function currentActor(req: Request): Actor {
   if (!req.user) throw new UnauthorizedError('Authentication required.');
-  return { id: req.user.id, role: req.user.role };
+  return { id: req.user.id, role: req.user.role, ...(req.user.profileId ? { profileId: req.user.profileId } : {}) };
 }
 
 export function isAdmin(actor: Actor): boolean {

@@ -97,8 +97,20 @@ model User {
   passwordHash String
   role         UserRole          @default(USER)
   status       UserAccountStatus @default(ACTIVE)
+  /// The Super Admin (support@romva.space): an admin who may also create and
+  /// revoke Profile tokens for the extension and the agent.
+  superAdmin   Boolean           @default(false)
+  /// The authenticator app's secret (encrypted, see `crypto/secret-box.ts`).
+  /// Required for the Super Admin: set up on the first sign-in, asked for on every one.
+  totpSecret    String?
+  totpEnabledAt DateTime?
+  /// The last 30-second step a code was accepted for, so a code is never taken twice.
+  totpLastStep  Int?
   createdAt    DateTime          @default(now())
   updatedAt    DateTime          @updatedAt
+
+  profileTokensCreated ProfileToken[]
+  loginChallenges      LoginChallenge[]
 
   /// Legacy 1:1 Resume stub for `/api/profile`. Application Profiles are
   /// first-class rows (often with `userId` null) shared via `ProfileShare`.
@@ -129,6 +141,46 @@ model RefreshToken {
 
   @@index([userId])
   @@map("refresh_tokens")
+}
+
+/// A Profile token: what the Chrome extension and the Resume agent sign in
+/// with instead of an email and password. It acts as its Profile only (that
+/// Profile's applications, nothing else), never expires, and works until
+/// revoked. Only the SHA-256 digest is stored; the token is shown once.
+model ProfileToken {
+  id          String    @id @default(uuid()) @db.Uuid
+  profileId   String    @db.Uuid
+  profile     Profile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  label       String    @default("")
+  tokenHash   String    @unique
+  /// The token's first characters ("rmv_AbC1…"), to tell tokens apart in the list.
+  prefix      String
+  createdById String?   @db.Uuid
+  createdBy   User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+  lastUsedAt  DateTime?
+  revokedAt   DateTime?
+
+  @@index([profileId])
+  @@map("profile_tokens")
+}
+
+/// A sign-in waiting for the authenticator code: the password was right, and
+/// no session is issued until the code is. `setup`: the first sign-in, whose
+/// new secret (encrypted) is kept here until a code from it proves it scanned.
+model LoginChallenge {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @db.Uuid
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  setup      Boolean   @default(false)
+  totpSecret String?
+  attempts   Int       @default(0)
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@map("login_challenges")
 }
 
 /// One successful password sign-in. Written on `POST /api/auth/login` only —
@@ -524,6 +576,7 @@ model Profile {
   workExperience WorkExperience[]
   education      Education[]
   shares         ProfileShare[]
+  tokens         ProfileToken[]
   bids           Bid[]
 
   @@map("profiles")

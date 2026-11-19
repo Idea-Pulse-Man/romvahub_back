@@ -15,7 +15,7 @@ const server = app.listen(env.PORT, () => {
   // Resumes for applications filed elsewhere (the scraper posts to the
   // deployed API, which cannot drive Chrome). Off unless CHATGPT_AUTO_MAKE=true.
   startAutoMakeWatcher();
-  // Each morning (Eastern): Drafts posted more than a day ago become Expired.
+  // Each morning (Eastern): Drafts posted more than 2 days ago become Expired.
   startDraftExpiry();
 });
 

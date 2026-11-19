@@ -16,7 +16,13 @@ import {
   releaseHeldBy,
   touchClaim,
 } from './auto-make-queue.js';
-import { coverLetterMessageFromStoredResume, finishCoverLetter, finishResume, prepareMake } from './make-steps.js';
+import {
+  checkResumeAnswer,
+  coverLetterMessageFromStoredResume,
+  finishCoverLetter,
+  finishResume,
+  prepareMake,
+} from './make-steps.js';
 
 /**
  * The automatic Resume maker for workers on other computers — the Chrome
@@ -25,6 +31,7 @@ import { coverLetterMessageFromStoredResume, finishCoverLetter, finishResume, pr
  * the local API's own watcher:
  *
  *   POST /api/auto-make/claim                      { worker, letterOnlyJobs? } → the next application and its first message
+ *   POST /api/auto-make/jobs/:bidId/check-resume   { answer, worker? } → { ok, problems, retryMessage? }; stores and counts nothing
  *   POST /api/auto-make/jobs/:bidId/resume         { answer, worker? } → Resume files + the second message
  *   POST /api/auto-make/jobs/:bidId/cover-letter   { answer, worker? } → cover letter files; done
  *   POST /api/auto-make/jobs/:bidId/release        { failed, error?, worker? } → handed back
@@ -128,6 +135,28 @@ autoMakeJobsRouter.post('/claim', validate({ body: ClaimSchema }), async (req, r
   if (!job) await reportWorker({});
   res.json({ enabled: true, job });
 });
+
+/**
+ * The look at ChatGPT's Resume answer before it is handed in: readable JSON
+ * that fills the template's summary, skills, job titles and bullet points?
+ * Stores nothing and counts nothing. When something is missing, `retryMessage`
+ * is the request again with what was missing spelled out — for one more chat.
+ */
+autoMakeJobsRouter.post(
+  '/jobs/:bidId/check-resume',
+  validate({ params: BidParamsSchema, body: AnswerSchema }),
+  async (req, res) => {
+    const actor = currentActor(req);
+    const { params, body } = (req as ValidatedRequest<AnswerBody, BidParams>).valid;
+    if (!(await isClaimed(params.bidId, body.worker))) {
+      throw new ConflictError('This application is not being made by this worker any more. Ask for the next one.');
+    }
+    const job = await prepareMake(actor, params.bidId);
+    const check = await checkResumeAnswer(job, body.answer);
+    await touchClaim(params.bidId, body.worker);
+    res.json({ ok: check.problems.length === 0, ...check });
+  },
+);
 
 autoMakeJobsRouter.post(
   '/jobs/:bidId/resume',

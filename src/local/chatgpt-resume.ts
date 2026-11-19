@@ -6,6 +6,7 @@ import { logger } from '../logger.js';
 import { askChatGpt } from './chatgpt-web.js';
 import { autoMakeEnabled } from './auto-make-state.js';
 import {
+  checkResumeAnswer,
   coverLetterMessageFromStoredResume,
   finishCoverLetter,
   finishResume,
@@ -100,7 +101,15 @@ export function autoMakeNewApplication(actor: Actor, bid: Bid): void {
 /** The two chats in this computer's ChatGPT window, around the shared steps (`make-steps.ts`). */
 async function make(actor: Actor, bidId: string): Promise<MadeResume> {
   const job = await prepareMake(actor, bidId);
-  const resume = await finishResume(job, await askChatGpt(job.resumeMessage));
+  // The answer is looked over first: missing a summary, the skills or a job's
+  // title, ChatGPT is asked once more, told what was missing.
+  let answer = await askChatGpt(job.resumeMessage);
+  const check = await checkResumeAnswer(job, answer);
+  if (check.retryMessage) {
+    logger.warn({ bidId, problems: check.problems }, 'Resume answer incomplete; asking ChatGPT again');
+    answer = await askChatGpt(check.retryMessage);
+  }
+  const resume = await finishResume(job, answer);
   let bid = resume.bid;
   const files: MadeResume['files'] = { ...resume.files };
 

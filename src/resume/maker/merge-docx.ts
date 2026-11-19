@@ -463,7 +463,8 @@ function replacePlaceholdersInParagraph(
   }
 }
 
-function getSkillEntries(
+/** The skill lines a merge writes — also what the answer check counts (`resume-answer-check.ts`). */
+export function getSkillEntries(
   placeholders: Record<string, string>,
 ): Array<{ group: string; value: string }> {
   const entries: Array<{ group: string; value: string }> = [];

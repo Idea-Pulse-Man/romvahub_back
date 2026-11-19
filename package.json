@@ -20,6 +20,7 @@
     "prisma:studio": "node ./node_modules/prisma/build/index.js studio",
     "db:seed": "tsx prisma/seed.ts",
     "admin": "tsx scripts/create-admin.ts",
+    "super-admin": "tsx scripts/super-admin.ts",
     "proofs:fingerprint": "tsx scripts/fingerprint-proofs.ts"
   },
   "dependencies": {

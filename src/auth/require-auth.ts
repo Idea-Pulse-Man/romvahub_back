@@ -3,13 +3,22 @@ import { ForbiddenError, UnauthorizedError } from '../http/errors.js';
 import type { UserRole } from './auth.schemas.js';
 import { ACCESS_COOKIE } from './cookies.js';
 import { verifyAccessToken } from './tokens.js';
+import { assertTokenRoute, isProfileToken, resolveProfileToken } from './profile-tokens.js';
+import { prisma } from '../prisma.js';
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
     interface Request {
       /** Set by `requireAuth`; every route below it can rely on this existing. */
-      user?: { id: string; email: string; role: UserRole };
+      user?: {
+        id: string;
+        email: string;
+        role: UserRole;
+        /** Signed in with a Profile token (the extension, the agent): it acts as this Profile only. */
+        profileId?: string;
+        tokenId?: string;
+      };
     }
   }
 }
@@ -29,6 +38,27 @@ function extractToken(req: Request): string | null {
 }
 
 export const requireAuth: RequestHandler = (req: Request, _res: Response, next: NextFunction) => {
+  // A Profile token first, before any cookie: the extension and the agent send
+  // `Authorization: Bearer rmv_…`, and act as its Profile whoever is signed in.
+  const header = req.get('authorization');
+  const bearer = header?.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : '';
+  if (bearer && isProfileToken(bearer)) {
+    resolveProfileToken(bearer)
+      .then((identity) => {
+        assertTokenRoute(req);
+        req.user = {
+          id: identity.userId,
+          email: identity.email,
+          role: 'user',
+          profileId: identity.profileId,
+          tokenId: identity.tokenId,
+        };
+        next();
+      })
+      .catch(next);
+    return;
+  }
+
   const token = extractToken(req);
   if (!token) {
     next(new UnauthorizedError('Authentication required.'));
@@ -38,6 +68,28 @@ export const requireAuth: RequestHandler = (req: Request, _res: Response, next: 
   const payload = verifyAccessToken(token);
   req.user = { id: payload.sub, email: payload.email, role: payload.role };
   next();
+};
+
+/**
+ * Super Admin-only routes (the Profile tokens). Read from the database on
+ * every call rather than from the access token, so taking the flag away takes
+ * effect at once. Mount below `requireAuth`.
+ */
+export const requireSuperAdmin: RequestHandler = (req: Request, _res: Response, next: NextFunction) => {
+  if (!req.user || req.user.profileId) {
+    next(new UnauthorizedError('Authentication required.'));
+    return;
+  }
+  prisma.user
+    .findUnique({ where: { id: req.user.id }, select: { superAdmin: true, status: true } })
+    .then((user) => {
+      if (!user?.superAdmin || user.status !== 'ACTIVE') {
+        next(new ForbiddenError('This action is restricted to the Super Admin.'));
+        return;
+      }
+      next();
+    })
+    .catch(next);
 };
 
 /**

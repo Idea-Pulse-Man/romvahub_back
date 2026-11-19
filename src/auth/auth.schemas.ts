@@ -23,12 +23,19 @@ export const LoginSchema = z.object({
  * There are exactly two roles. The deployment has one Admin; everyone else is
  * a User. Accounts are created by the Admin — there is no public sign-up.
  */
+/** The authenticator code that finishes the Super Admin's sign-in. */
+export const MfaVerifySchema = z.object({
+  challengeId: z.uuid(),
+  code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code from your authenticator app.'),
+});
+
 export const UserRoleSchema = z.enum(['user', 'admin']);
 
 export const AuthUserSchema = z.object({
   id: z.uuid(),
   email: z.email(),
   role: UserRoleSchema,
+  superAdmin: z.boolean(),
   createdAt: z.iso.datetime(),
 });
 
@@ -45,4 +52,5 @@ export const AuthResponseSchema = z.object({
 
 export type Credentials = z.infer<typeof CredentialsSchema>;
 export type LoginInput = z.infer<typeof LoginSchema>;
+export type MfaVerifyInput = z.infer<typeof MfaVerifySchema>;
 export type UserRole = z.infer<typeof UserRoleSchema>;

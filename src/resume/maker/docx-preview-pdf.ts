@@ -247,6 +247,32 @@ function latinFontsOnly(root: Element): void {
   }
 }
 
+/** Fonts whose bullets Word stores as Private Use Area code points (U+F0xx). */
+const SYMBOL_FONTS = /^(symbol|wingdings( [23])?|webdings)$/i;
+const PRIVATE_USE = /[-]/;
+
+/**
+ * Word's default bullet is U+F0B7 in Symbol (U+F0A7 in Wingdings for the
+ * square, and so on): Private Use Area code points that only draw in that
+ * font. Headless Chromium has no Symbol, so the marker printed as nothing —
+ * the indent was there, the dot was not. Replace such a level's text with a
+ * real bullet and drop the symbol font, so it draws in the paragraph's
+ * (embedded) font, which has U+2022.
+ */
+function unicodeBullets(root: Element): void {
+  for (const level of Array.from(root.getElementsByTagName('w:lvl'))) {
+    const text = children(level, 'w:lvlText')[0];
+    const value = text?.getAttribute('w:val') ?? '';
+    if (!text || !PRIVATE_USE.test(value)) continue;
+    const rPr = children(level, 'w:rPr')[0];
+    const fonts = rPr && children(rPr, 'w:rFonts')[0];
+    const named = fonts ? ['w:ascii', 'w:hAnsi'].map(name => fonts.getAttribute(name) ?? '') : [];
+    if (!named.some(name => SYMBOL_FONTS.test(name))) continue;
+    text.setAttribute('w:val', value.replace(new RegExp(PRIVATE_USE.source, 'g'), '•'));
+    rPr!.removeChild(fonts!);
+  }
+}
+
 function pPrOf(paragraph: Element): Element {
   let pPr = children(paragraph, 'w:pPr')[0];
   if (!pPr) {
@@ -384,7 +410,8 @@ export interface PreviewDocument {
  *   Maker templates: grey 11pt rather than Normal's black 10pt);
  * - "Don't add space between paragraphs of the same style" is applied as
  *   zero spacing between them — it ignores it (bullet lists ran long);
- * - trailing spaces are trimmed — Word ignores them when aligning.
+ * - trailing spaces are trimmed — Word ignores them when aligning;
+ * - Symbol/Wingdings bullets become U+2022 — Chromium has no Symbol font.
  */
 export async function prepareForPreview(docx: Buffer): Promise<PreviewDocument> {
   const zip = await JSZip.loadAsync(docx);
@@ -402,6 +429,7 @@ export async function prepareForPreview(docx: Buffer): Promise<PreviewDocument> 
     const dom = new DOMParser().parseFromString(xml, 'application/xml');
     if (!dom.documentElement) continue;
     latinFontsOnly(dom.documentElement);
+    if (part === 'word/numbering.xml') unicodeBullets(dom.documentElement);
     zip.file(part, new XMLSerializer().serializeToString(dom));
   }
 

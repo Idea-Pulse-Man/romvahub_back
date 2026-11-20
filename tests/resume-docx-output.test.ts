@@ -77,6 +77,22 @@ describe('PDF without Word (docx-preview)', () => {
     expect(prepared.keepWithNext).toContain('docx_heading1');
   });
 
+  it.each(['Justin_Updated_2026.8.17.docx', 'William_Kolega_Template_2.docx'])(
+    '%s: draws Symbol/Wingdings bullets as U+2022, which Chromium has a font for',
+    async id => {
+      const zip = await merged(id);
+      const before = await zip.file('word/numbering.xml')!.async('string');
+      expect(before).toMatch(/w:lvlText w:val=""/);
+
+      const docx = Buffer.from(await zip.generateAsync({ type: 'nodebuffer' }));
+      const prepared = await prepareForPreview(docx);
+      const xml = await (await JSZip.loadAsync(prepared.docx)).file('word/numbering.xml')!.async('string');
+      expect(xml).not.toMatch(/[-]/);
+      expect(xml).toContain('w:lvlText w:val="•"');
+      expect(xml).not.toMatch(/w:rFonts[^>]*w:ascii="(Symbol|Wingdings)"/);
+    },
+  );
+
   it('does not touch the Word file that is downloaded', async () => {
     const zip = await merged('William_Kolega_Template_2.docx');
     const docx = Buffer.from(await zip.generateAsync({ type: 'nodebuffer' }));

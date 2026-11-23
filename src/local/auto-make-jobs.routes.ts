@@ -3,17 +3,20 @@ import { z } from 'zod';
 import { currentActor, type Actor } from '../auth/actor.js';
 import { requireAuth } from '../auth/require-auth.js';
 import { assertBidAccess, bidAccessScope } from '../bids/bids.service.js';
-import { BadRequestError, ConflictError } from '../http/errors.js';
+import { BadRequestError, ConflictError, NotFoundError } from '../http/errors.js';
+import { prisma } from '../prisma.js';
 import { validate, type ValidatedRequest } from '../http/validate.js';
 import { logger } from '../logger.js';
 import { autoMakeEnabled, reportWorker } from './auto-make-state.js';
 import {
+  cancelMakeRequest,
   claimNext,
   type ClaimKind,
   completeClaim,
   isClaimed,
   releaseClaim,
   releaseHeldBy,
+  requestMake,
   touchClaim,
 } from './auto-make-queue.js';
 import {
@@ -37,6 +40,11 @@ import {
  *   POST /api/auto-make/jobs/:bidId/release        { failed, error?, worker? } → handed back
  *   POST /api/auto-make/heartbeat                  { worker, bidId?, waitingReason? } → still here (and still on bidId)
  *   POST /api/auto-make/release-held               { worker } → everything this worker held, handed back (on start)
+ *   POST   /api/auto-make/jobs/:bidId/request      "Make" clicked in the table: the workers take it next
+ *   DELETE /api/auto-make/jobs/:bidId/request      the request taken back
+ *
+ * A requested application is handed out before every other one, and even at
+ * Stop (the claim then answers `enabled: true` with it, so every worker makes it).
  *
  * `worker` on a step: the step is refused (409) unless that worker still
  * holds the application, and a release only hands back that worker's own
@@ -89,9 +97,9 @@ function isAnswerProblem(error: unknown): boolean {
  * one that cannot even be prepared (its Profile has no Resume prompt yet, its
  * stored Resume has no text…) is counted as failed and the next one is offered.
  */
-async function claimPrepared(actor: Actor, worker: string, kind: ClaimKind) {
+async function claimPrepared(actor: Actor, worker: string, kind: ClaimKind, requestedOnly = false) {
   for (let tries = 0; tries < 3; tries += 1) {
-    const claimed = await claimNext(bidAccessScope(actor), worker, { kind });
+    const claimed = await claimNext(bidAccessScope(actor), worker, { kind, requestedOnly });
     if (!claimed) return null;
     const { letterOnly } = claimed;
     try {
@@ -121,7 +129,15 @@ autoMakeJobsRouter.post('/claim', validate({ body: ClaimSchema }), async (req, r
   const actor = currentActor(req);
   const { worker, letterOnlyJobs } = (req as ValidatedRequest<ClaimBody>).valid.body;
 
+  const kind: ClaimKind = letterOnlyJobs ? 'any' : 'resume';
   if (!(await autoMakeEnabled())) {
+    // At Stop only what someone asked for by clicking Make is made — handed
+    // out as `enabled: true`, so a worker that waits at Stop makes it anyway.
+    const requested = await claimPrepared(actor, worker, kind, true);
+    if (requested) {
+      res.json({ enabled: true, job: requested });
+      return;
+    }
     await reportWorker({});
     res.json({ enabled: false, job: null });
     return;
@@ -131,7 +147,7 @@ autoMakeJobsRouter.post('/claim', validate({ body: ClaimSchema }), async (req, r
   // missing — its Resume (and letter), or, for a worker that can do it, just
   // its cover letter. (One that keeps failing waits out its back-off, so it
   // never blocks the list.)
-  const job = await claimPrepared(actor, worker, letterOnlyJobs ? 'any' : 'resume');
+  const job = await claimPrepared(actor, worker, kind);
   if (!job) await reportWorker({});
   res.json({ enabled: true, job });
 });
@@ -234,6 +250,48 @@ autoMakeJobsRouter.post('/heartbeat', validate({ body: HeartbeatSchema }), async
     }
   }
   res.json({ ok: true });
+});
+
+/**
+ * "Make" clicked on an application in the table: the Resume and cover letter
+ * (or just the letter, when the Resume is there) are made next, before every
+ * other waiting application, by whichever worker asks first.
+ */
+autoMakeJobsRouter.post('/jobs/:bidId/request', validate({ params: BidParamsSchema }), async (req, res) => {
+  const actor = currentActor(req);
+  const { bidId } = (req as ValidatedRequest<unknown, BidParams>).valid.params;
+  const bid = await prisma.bid.findFirst({
+    where: { id: bidId, ...bidAccessScope(actor) },
+    select: {
+      status: true,
+      jobDescription: true,
+      resumeDocument: true,
+      coverLetterDocument: true,
+      _count: { select: { resumeFiles: true } },
+    },
+  });
+  if (!bid) throw new NotFoundError('No such application.');
+  if (bid.status === 'SKIP') {
+    throw new BadRequestError('This application is marked Skip. Change its status to make a Resume for it.');
+  }
+  if (!bid.jobDescription?.trim()) {
+    throw new BadRequestError('This application has no job description. Add one, then click Make again.');
+  }
+  const hasResume = bid._count.resumeFiles > 0 || bid.resumeDocument !== null;
+  if (hasResume && bid.coverLetterDocument !== null) {
+    throw new BadRequestError('This application already has its Resume and cover letter.');
+  }
+  await requestMake(bidId);
+  logger.info({ bidId, letterOnly: hasResume }, 'Auto Make: requested from the table');
+  res.json({ requested: true, letterOnly: hasResume });
+});
+
+autoMakeJobsRouter.delete('/jobs/:bidId/request', validate({ params: BidParamsSchema }), async (req, res) => {
+  const actor = currentActor(req);
+  const { bidId } = (req as ValidatedRequest<unknown, BidParams>).valid.params;
+  await assertBidAccess(actor, bidId);
+  await cancelMakeRequest(bidId);
+  res.json({ requested: false });
 });
 
 /** A worker just started: whatever its previous run held is free again at once, uncounted. */

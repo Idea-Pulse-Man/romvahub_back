@@ -779,6 +779,11 @@ model AutoMakeClaim {
   lastError String?
   failedAt  DateTime?
 
+  /// "Make" clicked on romva.space: made before every other waiting
+  /// application (earliest click first), even at Stop. Cleared when it is
+  /// made (the row goes) or when the attempt fails.
+  requestedAt DateTime?
+
   updatedAt DateTime @updatedAt
 
   @@map("auto_make_claims")

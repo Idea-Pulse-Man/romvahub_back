@@ -11,6 +11,10 @@ import { prisma } from '../prisma.js';
  * attempt is counted and the application waits — 5 minutes, or an hour after
  * three misses — on every computer alike.
  *
+ * Requested ("Make" clicked in the Applications table): taken before every
+ * other waiting application, earliest click first — whatever its status
+ * (Skip aside) and however old it is.
+ *
  * Times are written by the database itself, in UTC, as Prisma stores them.
  */
 
@@ -43,42 +47,49 @@ const NEEDS_LETTER: PrismaTypes.BidWhereInput = {
  * are listed): the worker goes down the list and does whatever each one is
  * missing before moving on. `letterOnly` on each: only its cover letter is
  * missing.
+ *
+ * `requested`: only the applications someone clicked "Make" on, earliest
+ * click first — any status but Skip, any age.
  */
-async function waiting(scope: PrismaTypes.BidWhereInput, take: number, kind: ClaimKind = 'resume') {
+async function waiting(
+  scope: PrismaTypes.BidWhereInput,
+  take: number,
+  kind: ClaimKind = 'resume',
+  { requested = false }: { requested?: boolean } = {},
+) {
   const now = Date.now();
   const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000);
+  const free: PrismaTypes.AutoMakeClaimWhereInput[] = [
+    { OR: [{ claimedAt: null }, { claimedAt: { lt: minutesAgo(CLAIM_TTL_MINUTES) } }] },
+    {
+      OR: [
+        { failedAt: null },
+        { attempts: { lt: 3 }, failedAt: { lt: minutesAgo(5) } },
+        { failedAt: { lt: minutesAgo(60) } },
+      ],
+    },
+  ];
   const rows = await prisma.bid.findMany({
     where: {
       AND: [
         scope,
         {
-          status: 'DRAFT',
-          createdAt: { gte: new Date(now - LOOKBACK_DAYS * 24 * 60 * 60_000) },
+          ...(requested
+            ? { status: { not: 'SKIP' } }
+            : { status: 'DRAFT', createdAt: { gte: new Date(now - LOOKBACK_DAYS * 24 * 60 * 60_000) } }),
           jobDescription: { not: null },
           NOT: [{ jobDescription: '' }],
           ...(kind === 'resume' ? NEEDS_RESUME : kind === 'letter' ? NEEDS_LETTER : {}),
           ...(kind === 'any' ? { AND: [{ OR: [NEEDS_RESUME, NEEDS_LETTER] }] } : {}),
-          OR: [
-            { autoMakeClaim: null },
-            {
-              autoMakeClaim: {
-                AND: [
-                  { OR: [{ claimedAt: null }, { claimedAt: { lt: minutesAgo(CLAIM_TTL_MINUTES) } }] },
-                  {
-                    OR: [
-                      { failedAt: null },
-                      { attempts: { lt: 3 }, failedAt: { lt: minutesAgo(5) } },
-                      { failedAt: { lt: minutesAgo(60) } },
-                    ],
-                  },
-                ],
-              },
-            },
-          ],
+          ...(requested
+            ? { autoMakeClaim: { requestedAt: { not: null }, AND: free } }
+            : { OR: [{ autoMakeClaim: null }, { autoMakeClaim: { AND: free } }] }),
         },
       ],
     },
-    orderBy: [{ number: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+    orderBy: requested
+      ? [{ autoMakeClaim: { requestedAt: 'asc' } }, { number: 'asc' }, { id: 'asc' }]
+      : [{ number: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
     take,
     select: {
       id: true,
@@ -95,17 +106,21 @@ async function waiting(scope: PrismaTypes.BidWhereInput, take: number, kind: Cla
 export type ClaimedApplication = Awaited<ReturnType<typeof waiting>>[number];
 
 /**
- * Takes the first waiting application in `scope` for `worker` (see `waiting`
- * for the order), or returns null when there is none. Two workers asking at
- * once never get the same one: the row is written only when it is free (or
- * its holder went quiet).
+ * Takes the first waiting application in `scope` for `worker` — a requested
+ * one first, else down the list (see `waiting`) — or returns null when there
+ * is none. Two workers asking at once never get the same one: the row is
+ * written only when it is free (or its holder went quiet).
+ *
+ * `requestedOnly`: requested applications or nothing (Auto resume at Stop).
  */
 export async function claimNext(
   scope: PrismaTypes.BidWhereInput,
   worker: string,
-  { kind = 'resume' }: { kind?: ClaimKind } = {},
+  { kind = 'resume', requestedOnly = false }: { kind?: ClaimKind; requestedOnly?: boolean } = {},
 ): Promise<ClaimedApplication | null> {
-  for (const candidate of await waiting(scope, 5, kind)) {
+  const candidates = await waiting(scope, 5, kind, { requested: true });
+  if (!requestedOnly) candidates.push(...(await waiting(scope, 5, kind)));
+  for (const candidate of candidates) {
     const taken = await prisma.$queryRaw<{ bidId: string }[]>`
       INSERT INTO "auto_make_claims" ("bidId", "worker", "claimedAt", "updatedAt")
       VALUES (${candidate.id}::uuid, ${worker}, ${NOW_UTC}, ${NOW_UTC})
@@ -154,7 +169,8 @@ export async function completeClaim(bidId: string): Promise<void> {
 
 /**
  * Handed back. `failed`: the application's own problem (an answer that could
- * not be read…), counted, and it waits before the next try. Otherwise the
+ * not be read…), counted, and it waits before the next try — and a "Make"
+ * request on it is dropped, so the table offers Make again. Otherwise the
  * worker could not get to it (ChatGPT signed out, the window closed): free for
  * the next worker at once, no count. With `worker`, only that worker's own
  * hold is handed back: one that lost the application to another worker
@@ -167,10 +183,16 @@ export async function releaseClaim(
 ): Promise<void> {
   const error = outcome.error?.slice(0, 2000) ?? null;
   if (outcome.failed) {
-    await prisma.$executeRaw`
-      UPDATE "auto_make_claims"
-      SET "claimedAt" = NULL, "attempts" = "attempts" + 1, "failedAt" = ${NOW_UTC}, "lastError" = ${error}, "updatedAt" = ${NOW_UTC}
-      WHERE "bidId" = ${bidId}::uuid ${heldBy(worker)}`;
+    const dropped = await prisma.$queryRaw<{ requested: boolean }[]>`
+      WITH before AS (SELECT "bidId", "requestedAt" FROM "auto_make_claims" WHERE "bidId" = ${bidId}::uuid)
+      UPDATE "auto_make_claims" c
+      SET "claimedAt" = NULL, "attempts" = c."attempts" + 1, "failedAt" = ${NOW_UTC}, "lastError" = ${error},
+          "requestedAt" = NULL, "updatedAt" = ${NOW_UTC}
+      FROM before
+      WHERE c."bidId" = before."bidId" ${heldBy(worker)}
+      RETURNING (before."requestedAt" IS NOT NULL) AS "requested"`;
+    // The row's Make link comes back: open tables refetch when an application changes.
+    if (dropped.some((row) => row.requested)) await touchBid(bidId);
   } else {
     await prisma.$executeRaw`
       UPDATE "auto_make_claims" SET "claimedAt" = NULL, "updatedAt" = ${NOW_UTC}
@@ -212,4 +234,29 @@ export async function retryAllNow(): Promise<number> {
   return prisma.$executeRaw`
     UPDATE "auto_make_claims" SET "attempts" = 0, "failedAt" = NULL, "lastError" = NULL, "updatedAt" = ${NOW_UTC}
     WHERE "claimedAt" IS NULL AND ("failedAt" IS NOT NULL OR "attempts" > 0)`;
+}
+
+/** The application marked changed, so open tables refetch it (the bids version moves). */
+async function touchBid(bidId: string): Promise<void> {
+  await prisma.bid.updateMany({ where: { id: bidId }, data: { updatedAt: new Date() } });
+}
+
+/**
+ * "Make" clicked on an application: the workers take it next, before every
+ * other waiting one — even at Stop. Earlier failures are forgotten, so no
+ * back-off holds it up. One being made right now keeps its holder.
+ */
+export async function requestMake(bidId: string): Promise<void> {
+  const reset = { requestedAt: new Date(), attempts: 0, failedAt: null, lastError: null };
+  await prisma.autoMakeClaim.upsert({ where: { bidId }, create: { bidId, ...reset }, update: reset });
+  await touchBid(bidId);
+}
+
+/** The request taken back: the application waits its normal turn again. */
+export async function cancelMakeRequest(bidId: string): Promise<void> {
+  const { count } = await prisma.autoMakeClaim.updateMany({
+    where: { bidId, requestedAt: { not: null } },
+    data: { requestedAt: null },
+  });
+  if (count > 0) await touchBid(bidId);
 }

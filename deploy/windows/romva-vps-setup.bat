@@ -159,6 +159,12 @@ if ($LASTEXITCODE -eq 0 -and [int]("0" + $count.Trim()) -gt 0) {
   Write-Host ''
   $Source = (Read-Host 'Paste the Supabase address here').Trim().Trim('"').Trim("'")
   if ($Source -notlike 'postgres*') { Fail 'That does not look like a database address (it must start with postgresql://).' }
+  # Options only the Node.js driver knows (pg_dump refuses them), e.g. uselibpqcompat.
+  if ($Source.Contains('?')) {
+    $base, $query = $Source.Split('?', 2)
+    $kept = $query.Split('&') | Where-Object { $_ -and $_ -notmatch '^(uselibpqcompat|pgbouncer|connection_limit|pool_timeout|schema)=' }
+    $Source = if ($kept) { $base + '?' + ($kept -join '&') } else { $base }
+  }
   & "$PgBin\pg_dump.exe" $Source --schema=public --no-owner --no-privileges -Fc -f "$Root\supabase.dump"
   if ($LASTEXITCODE -ne 0) { Fail 'Could not read from Supabase. Check the address and try again.' }
   Ok 'Downloaded. Loading it into the new database...'

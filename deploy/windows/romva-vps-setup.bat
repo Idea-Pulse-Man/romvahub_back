@@ -57,6 +57,20 @@ Write-Host '  romva server setup' -ForegroundColor White
 Write-Host '  This takes about 20-30 minutes. Keep this window open.' -ForegroundColor White
 Write-Host ''
 
+# ---------------------------------------------------------------- move kit
+# Moving from another VPS: a folder "romva-move-kit" next to this file (made there
+# with C:\romva\make-move-kit.bat) brings the database, the settings and the
+# passwords, so nobody has to sign in again.
+$Kit = $null
+if ($f) {
+  $candidate = Join-Path (Split-Path -Parent $f) 'romva-move-kit'
+  if (Test-Path "$candidate\romva.dump") { $Kit = $candidate }
+}
+if ($Kit) {
+  Write-Host "  Move kit found: $Kit" -ForegroundColor Green
+  if ((Test-Path "$Kit\SECRETS.txt") -and -not (Test-Path "$Root\SECRETS.txt")) { Copy-Item "$Kit\SECRETS.txt" "$Root\SECRETS.txt" }
+}
+
 # ---------------------------------------------------------------- secrets
 $SecretsFile = "$Root\SECRETS.txt"
 $S = @{}
@@ -152,6 +166,12 @@ Say '3/9 Copying your data from Supabase'
 $count = (& "$PgBin\psql.exe" $DbUrl -tAc 'select count(*) from bids' 2>$null) -join ''
 if ($LASTEXITCODE -eq 0 -and [int]("0" + $count.Trim()) -gt 0) {
   Ok "Your data is already here ($($count.Trim()) applications). Skipping the copy."
+} elseif ($Kit) {
+  Ok 'Loading the database from the move kit...'
+  & "$PgBin\pg_restore.exe" --no-owner --no-privileges -d $DbUrl "$Kit\romva.dump"
+  $count = (& "$PgBin\psql.exe" $DbUrl -tAc 'select count(*) from bids' 2>$null) -join ''
+  if ([int]("0" + $count.Trim()) -le 0) { Fail 'The move kit did not load (no applications in the new database).' }
+  Ok "Loaded from the move kit: $($count.Trim()) applications. (Red lines like 'already exists' are harmless.)"
 } else {
   Write-Host ''
   Write-Host '    On YOUR OWN PC, open the file  D:\workspace\romvahub\backend\.env' -ForegroundColor White
@@ -203,6 +223,10 @@ Pop-Location
 Ok 'Website built.'
 
 $EnvFile = "$Root\backend\.env"
+if (-not (Test-Path $EnvFile) -and $Kit -and (Test-Path "$Kit\backend.env")) {
+  Copy-Item "$Kit\backend.env" $EnvFile
+  Ok 'Settings taken from the move kit (same secret keys: everyone stays signed in).'
+}
 if (-not (Test-Path $EnvFile)) {
   $keys = (node -e "const c=require('crypto');console.log([c.randomBytes(48).toString('hex'),c.randomBytes(48).toString('hex'),c.randomBytes(32).toString('base64')].join(' '))").Split(' ')
   $lines = @(
@@ -226,7 +250,13 @@ if (-not (Test-Path $EnvFile)) {
   Set-Content -Path $EnvFile -Value $lines -Encoding ascii
   Ok 'Settings file written (C:\romva\backend\.env).'
 } else {
-  Ok 'Settings file already there; kept as it is.'
+  # Kept, but the lines that belong to THIS computer are set again.
+  $here = @{ 'DATABASE_URL' = $DbUrl; 'FRONTEND_DIR' = "$Root\frontend\dist\public"; 'CORS_ORIGIN' = "https://www.$Domain" }
+  if ($Chrome) { $here['PUPPETEER_EXECUTABLE_PATH'] = $Chrome }
+  $lines = @(Get-Content $EnvFile | Where-Object { $_ -notmatch '^(DATABASE_URL|DIRECT_URL|FRONTEND_DIR|CORS_ORIGIN|PUPPETEER_EXECUTABLE_PATH)=' })
+  $lines += $here.Keys | ForEach-Object { "$_=$($here[$_])" }
+  Set-Content -Path $EnvFile -Value $lines -Encoding ascii
+  Ok 'Settings file kept (database address and folders updated for this computer).'
 }
 
 Push-Location "$Root\backend"
@@ -309,7 +339,30 @@ $update = @(
   'pause'
 )
 Set-Content -Path "$Root\update.bat" -Value $update -Encoding ascii
-Ok 'Done.'
+
+# The move kit: everything needed to move romva to another VPS (or keep a copy on your PC).
+$kitScript = @(
+  "`$kit = '$Root\romva-move-kit'",
+  'New-Item -ItemType Directory -Force -Path $kit | Out-Null',
+  "Write-Host 'Making the move kit: saving the whole database...'",
+  "& '$PgBin\pg_dump.exe' '$DbUrl' -Fc -f `"`$kit\romva.dump`"",
+  'if ($LASTEXITCODE -ne 0) { Write-Host ''FAILED: the database could not be saved.'' -ForegroundColor Red; exit 1 }',
+  "Copy-Item '$Root\backend\.env' `"`$kit\backend.env`" -Force",
+  "Copy-Item '$Root\SECRETS.txt' `"`$kit\SECRETS.txt`" -Force",
+  'Set-Content "$kit\README.txt" -Value @(''romva move kit - made '' + (Get-Date -Format ''yyyy-MM-dd HH:mm''), '''', ''To move romva to a new VPS: copy this whole folder AND romva-vps-setup.bat'', ''to the new VPS, side by side (same folder), then double-click romva-vps-setup.bat.'', '''', ''KEEP THIS FOLDER PRIVATE: it holds your whole database and the secret keys.'')',
+  '$size = [math]::Round((Get-ChildItem $kit | Measure-Object Length -Sum).Sum / 1MB, 1)',
+  'Write-Host "DONE: $kit ($size MB). Copy this folder to your own PC." -ForegroundColor Green',
+  'Start-Process explorer.exe $kit'
+)
+Set-Content -Path "$Root\make-move-kit.ps1" -Value $kitScript -Encoding ascii
+icacls "$Root\make-move-kit.ps1" /inheritance:r /grant:r 'Administrators:F' 'SYSTEM:F' | Out-Null
+Set-Content -Path "$Root\make-move-kit.bat" -Encoding ascii -Value @(
+  '@echo off',
+  'rem Saves the whole database + settings into C:\romva\romva-move-kit (run as administrator).',
+  'powershell -NoProfile -ExecutionPolicy Bypass -File C:\romva\make-move-kit.ps1',
+  'pause'
+)
+Ok 'Done. (To keep a copy on your PC or move to a new VPS: run C:\romva\make-move-kit.bat)'
 
 # ---------------------------------------------------------------- finish
 $ip = ''
@@ -329,5 +382,6 @@ Write-Host ''
 Write-Host '  If your VPS company has a firewall in its own website panel, open ports 80 and 443 there.'
 Write-Host '  Passwords: C:\romva\SECRETS.txt     Server log: C:\romva\logs\backend.log'
 Write-Host '  Update later: right-click C:\romva\update.bat -> Run as administrator'
+Write-Host '  Copy of the database for your PC / a new VPS: right-click C:\romva\make-move-kit.bat -> Run as administrator'
 Write-Host ''
 Stop-Transcript | Out-Null

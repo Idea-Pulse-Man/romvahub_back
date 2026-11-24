@@ -317,6 +317,24 @@ export async function listSharedWith(userId: string): Promise<AdminProfileSummar
   return summaries.map(summary => ({ ...summary, sharedWith: [] }));
 }
 
+/**
+ * 404 unless this actor may edit the Profile: an admin any Profile, a Profile
+ * token its own, a User one shared with them or their own.
+ */
+export async function assertCanEdit(
+  actor: { id: string; role: string; profileId?: string },
+  profileId: string,
+): Promise<void> {
+  if (actor.role === 'admin' && !actor.profileId) return;
+  if (actor.profileId) {
+    if (actor.profileId.toLowerCase() === profileId.toLowerCase()) return;
+    throw new NotFoundError('No such profile.');
+  }
+  if (await isSharedWith(actor.id, profileId)) return;
+  const own = await prisma.profile.findFirst({ where: { id: profileId, userId: actor.id }, select: { id: true } });
+  if (!own) throw new NotFoundError('No such profile.');
+}
+
 export async function getSharedWith(
   userId: string,
   profileId: string,

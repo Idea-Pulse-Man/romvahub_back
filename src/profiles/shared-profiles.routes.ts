@@ -9,7 +9,9 @@ import { Router } from 'express';
 import { currentUserId, requireAuth } from '../auth/require-auth.js';
 import { validate, type ValidatedRequest } from '../http/validate.js';
 import {
+  CreateProfileSchema,
   ProfileIdParamsSchema,
+  type CreateProfileInput,
   type ProfileIdParams,
 } from '../admin/profiles.schemas.js';
 import * as profilesService from '../admin/profiles.service.js';
@@ -26,8 +28,32 @@ export const sharedProfilesRouter: Router = Router();
 sharedProfilesRouter.use(requireAuth);
 
 sharedProfilesRouter.get('/', async (req, res) => {
+  const actor = currentActor(req);
+  // A Profile token sees its own Profile and nothing else of its account.
+  if (actor.profileId) {
+    res.json([await profilesService.getProfile(actor.profileId)].map((detail) => ({ ...detail, sharedWith: [] })));
+    return;
+  }
   res.json(await profilesService.listSharedWith(currentUserId(req)));
 });
+
+/**
+ * A bidder edits a Profile they work on (the desktop app's Profile page): the
+ * same fields as the admin's form — personal, contact, links, experience,
+ * education, job-form and EEO answers. Who may use the Profile (shares,
+ * tokens) and deleting it stay on the admin routes.
+ */
+sharedProfilesRouter.put(
+  '/:id',
+  validate({ params: ProfileIdParamsSchema, body: CreateProfileSchema }),
+  async (req, res) => {
+    const { valid } = req as ValidatedRequest<CreateProfileInput, ProfileIdParams>;
+    const actor = currentActor(req);
+    await profilesService.assertCanEdit(actor, valid.params.id);
+    const detail = await profilesService.updateProfile(valid.params.id, valid.body);
+    res.json({ ...detail, sharedWith: [] });
+  },
+);
 
 /**
  * A Profile's own Resume settings for "Make": Resume template and Resume
@@ -117,6 +143,13 @@ sharedProfilesRouter.get(
   validate({ params: ProfileIdParamsSchema }),
   async (req, res) => {
     const { id } = (req as ValidatedRequest<unknown, ProfileIdParams>).valid.params;
+    const actor = currentActor(req);
+    // A token was already held to its own Profile by `assertTokenRoute`; an
+    // admin may open any Profile here too (the desktop app's Profile page).
+    if (actor.profileId || actor.role === 'admin') {
+      res.json({ ...(await profilesService.getProfile(id)), sharedWith: [] });
+      return;
+    }
     res.json(await profilesService.getSharedWith(currentUserId(req), id));
   },
 );

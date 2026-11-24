@@ -81,30 +81,52 @@ export async function resolveProfileToken(token: string): Promise<ProfileTokenId
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 
-/** The only routes a Profile token may call: what the extensions (Apply, HiringCafe scraper) and the agent need. */
+/**
+ * The routes a Profile token may call: everything a bidder does on ONE Profile.
+ *
+ * The extensions (Apply, HiringCafe scraper), the Resume agent and the romva
+ * hub desktop app in token mode. The data behind each route is scoped to the
+ * token's Profile by `bidAccessScope` (bids) and by `assertTokenRoute` below
+ * (`/api/profiles/<id>…` must name the token's own Profile). Admin pages,
+ * users, other Profiles and the Tokens page stay closed to a token.
+ */
 const TOKEN_ROUTES: Array<{ method: string; path: RegExp }> = [
   { method: 'GET', path: /^\/api\/auth\/me$/ },
-  // The extension: the jobs to fill, what to fill in, and marking one Applied.
+  // The extension: the jobs to fill and what to fill in.
   { method: 'GET', path: new RegExp(`^/api/auto-make/apply/(next|all|${UUID})$`, 'i') },
+  // Applications: the list, one application, filing (the scraper), editing and statuses.
+  { method: 'GET', path: /^\/api\/bids$/ },
+  { method: 'GET', path: /^\/api\/bids\/version$/ },
   { method: 'GET', path: new RegExp(`^/api/bids/${UUID}$`, 'i') },
-  { method: 'POST', path: /^\/api\/bids\/bulk\/status$/ },
-  // The HiringCafe scraper: a job it found, filed as an application of the token's
-  // Profile, after a look at that Profile's Avoid lists (its own Profile only).
+  { method: 'PATCH', path: new RegExp(`^/api/bids/${UUID}$`, 'i') },
   { method: 'POST', path: /^\/api\/bids$/ },
-  { method: 'GET', path: new RegExp(`^/api/profiles/${UUID}/avoid$`, 'i') },
-  // The Resume agent: the make queue.
+  { method: 'POST', path: /^\/api\/bids\/bulk\/status$/ },
+  // The Resume and cover letter of an application: the files and their JSON.
+  { method: 'GET', path: new RegExp(`^/api/bids/${UUID}/(resume|resume/document|cover-letter|cover-letter/document)$`, 'i') },
+  // The token's own Profile: read and edit it, its prompts, Avoid lists and template.
+  { method: 'GET', path: /^\/api\/profiles$/ },
+  { method: 'GET', path: new RegExp(`^/api/profiles/${UUID}$`, 'i') },
+  { method: 'PUT', path: new RegExp(`^/api/profiles/${UUID}$`, 'i') },
+  { method: 'GET', path: new RegExp(`^/api/profiles/${UUID}/(prompts|avoid|template)$`, 'i') },
+  { method: 'PUT', path: new RegExp(`^/api/profiles/${UUID}/(prompts|avoid)$`, 'i') },
+  // The Resume agent (and the desktop app's Resume Maker): the make queue.
   { method: 'POST', path: /^\/api\/auto-make\/(claim|heartbeat|release-held)$/ },
-  { method: 'POST', path: new RegExp(`^/api/auto-make/jobs/${UUID}/(check-resume|resume|cover-letter|release)$`, 'i') },
+  { method: 'POST', path: new RegExp(`^/api/auto-make/jobs/${UUID}/(check-resume|resume|cover-letter|release|request)$`, 'i') },
+  { method: 'DELETE', path: new RegExp(`^/api/auto-make/jobs/${UUID}/request$`, 'i') },
 ];
 
-/** 403 unless a Profile token may make this request. */
-export function assertTokenRoute(req: Request): void {
+const PROFILE_PATH = new RegExp(`^/api/profiles/(${UUID})(/|$)`, 'i');
+
+/** 403 unless a Profile token may make this request, for `profileId` (the token's own Profile). */
+export function assertTokenRoute(req: Request, profileId?: string): void {
   const path = req.originalUrl.split('?')[0]?.replace(/\/+$/, '') ?? '';
   const allowed = TOKEN_ROUTES.some((route) => route.method === req.method && route.path.test(path));
-  if (!allowed) throw new ForbiddenError('A Romva token may only be used by the extension and the agent.');
-  // The extension marks an application Applied, and nothing else.
-  if (path === '/api/bids/bulk/status' && (req.body as { status?: unknown } | undefined)?.status !== 'Applied') {
-    throw new ForbiddenError('A Romva token may only mark applications Applied.');
+  if (!allowed) throw new ForbiddenError('A Romva token may only be used for its own Profile.');
+  // `/api/profiles/<id>…` only for the token's own Profile, never another one of
+  // the same account.
+  const named = PROFILE_PATH.exec(path)?.[1];
+  if (named && (!profileId || named.toLowerCase() !== profileId.toLowerCase())) {
+    throw new ForbiddenError('A Romva token may only be used for its own Profile.');
   }
 }
 

@@ -211,6 +211,14 @@ export const ListBidsQuerySchema = z.object({
    * Ignored for plain accounts, who already see only their own rows.
    */
   profileId: z.uuid().optional(),
+  hasResume: z
+    .enum(['true', 'false'])
+    .transform((value) => value === 'true')
+    .optional()
+    .describe(
+      'Only applications that have a Resume (`true`) or have none yet (`false`). With `status=Draft`: ' +
+        'the desktop app\'s "Ready to apply" and "Draft" tabs.',
+    ),
   sort: BidSortSchema.optional().describe(
     'Ordering. `bidDate` (the default) is newest first; `updatedAt` is the Pipeline board\'s, so a ' +
       'card just moved sits at the top of its column; `number` is the Applications table\'s: the ' +

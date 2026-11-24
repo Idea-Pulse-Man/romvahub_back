@@ -233,6 +233,13 @@ async function listWhere(actor: Actor, query: ListBidsQuery): Promise<PrismaType
   if (query.status) clauses.push({ status: toDbStatus(query.status) });
   if (query.statuses?.length) clauses.push({ status: { in: query.statuses.map(toDbStatus) } });
 
+  // Has a Resume: a stored document or a synced file — the same test as `hasResume` on a bid.
+  if (query.hasResume === true) {
+    clauses.push({ OR: [{ resumeDocument: { not: PrismaTypes.AnyNull } }, { resumeFiles: { some: {} } }] });
+  } else if (query.hasResume === false) {
+    clauses.push({ resumeDocument: { equals: PrismaTypes.AnyNull }, resumeFiles: { none: {} } });
+  }
+
   // The same employer however it was written — "Acme", "ACME, Inc.", "The Acme
   // Company" — but the whole name rather than a substring: "Meta" must not
   // report an application at Metabase as a duplicate. See `companyKey`.

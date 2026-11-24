@@ -99,7 +99,12 @@ if (-not $pgInstalled) {
   choco install -y --no-progress postgresql17 --params "/Password:$($S['PG_ADMIN_PASSWORD'])"
 }
 choco install -y --no-progress nodejs-lts git nssm caddy
-choco install -y --no-progress googlechrome --ignore-checksums
+function FindChrome {
+  $places = @('C:\Program Files\Google\Chrome\Application\chrome.exe', 'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe')
+  $places += Get-ChildItem 'C:\Users\*\AppData\Local\Google\Chrome\Application\chrome.exe' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+  $places | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+if (-not (FindChrome)) { choco install -y --no-progress googlechrome --ignore-checksums }
 
 AddToPath 'C:\Program Files\nodejs'
 AddToPath 'C:\Program Files\Git\cmd'
@@ -109,7 +114,8 @@ foreach ($cmd in 'node', 'npm', 'git', 'nssm') {
 }
 $PgBin = (Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1).DirectoryName
 if (-not $PgBin) { Fail 'PostgreSQL was not installed. Run this file again.' }
-$Chrome = @('C:\Program Files\Google\Chrome\Application\chrome.exe', 'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe') | Where-Object { Test-Path $_ } | Select-Object -First 1
+$Chrome = FindChrome
+if ($Chrome) { Ok "Chrome found: $Chrome" }
 if (-not $Chrome) { Warn 'Chrome was not found: PDF resumes need it. Install Google Chrome later and run this file again.' }
 Ok "Node $(node --version), PostgreSQL in $PgBin"
 

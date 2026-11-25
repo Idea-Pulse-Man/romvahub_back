@@ -11,6 +11,11 @@ import { prisma } from '../prisma.js';
  * attempt is counted and the application waits — 5 minutes, or an hour after
  * three misses — on every computer alike.
  *
+ * The direction (▲ / ▼ on romva.space, `auto_make_state.makeOrder`): up — No
+ * 1 first; down — the highest number first, among the applications filed when
+ * ▼ was chosen (or Start pressed), so the ones scraped meanwhile never jump
+ * ahead. Once none of those is left, the newer ones are gone through the same way.
+ *
  * Requested ("Make" clicked in the Applications table): taken before every
  * other waiting application, earliest click first — whatever its status
  * (Skip aside) and however old it is.
@@ -31,6 +36,17 @@ const NOW_UTC = PrismaTypes.sql`(now() at time zone 'utc')`;
  * `any` — either, whichever application comes first.
  */
 export type ClaimKind = 'resume' | 'letter' | 'any';
+
+/** Down: highest number first, among those filed at `from` or before (all, when null). */
+export interface ClaimOrder {
+  down: boolean;
+  from: Date | null;
+}
+
+async function currentOrder(): Promise<ClaimOrder> {
+  const state = await prisma.autoMakeState.findUnique({ where: { id: 1 }, select: { makeOrder: true, downFrom: true } });
+  return { down: state?.makeOrder === 'down', from: state?.downFrom ?? null };
+}
 
 const NEEDS_RESUME: PrismaTypes.BidWhereInput = {
   resumeDocument: { equals: PrismaTypes.AnyNull },
@@ -55,7 +71,7 @@ async function waiting(
   scope: PrismaTypes.BidWhereInput,
   take: number,
   kind: ClaimKind = 'resume',
-  { requested = false }: { requested?: boolean } = {},
+  { requested = false, order = { down: false, from: null } }: { requested?: boolean; order?: ClaimOrder } = {},
 ) {
   const now = Date.now();
   const minutesAgo = (minutes: number) => new Date(now - minutes * 60_000);
@@ -85,11 +101,14 @@ async function waiting(
             ? { autoMakeClaim: { requestedAt: { not: null }, AND: free } }
             : { OR: [{ autoMakeClaim: null }, { autoMakeClaim: { AND: free } }] }),
         },
+        ...(!requested && order.down && order.from ? [{ createdAt: { lte: order.from } }] : []),
       ],
     },
     orderBy: requested
       ? [{ autoMakeClaim: { requestedAt: 'asc' } }, { number: 'asc' }, { id: 'asc' }]
-      : [{ number: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+      : order.down
+        ? [{ number: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }]
+        : [{ number: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
     take,
     select: {
       id: true,
@@ -119,7 +138,18 @@ export async function claimNext(
   { kind = 'resume', requestedOnly = false }: { kind?: ClaimKind; requestedOnly?: boolean } = {},
 ): Promise<ClaimedApplication | null> {
   const candidates = await waiting(scope, 5, kind, { requested: true });
-  if (!requestedOnly) candidates.push(...(await waiting(scope, 5, kind)));
+  if (!requestedOnly) {
+    const order = await currentOrder();
+    let next = await waiting(scope, 5, kind, { order });
+    if (order.down && order.from && next.length === 0) {
+      // Down to the last of those filed when ▼ was chosen: on to the ones
+      // filed since, again from the top.
+      const from = new Date();
+      await prisma.autoMakeState.updateMany({ where: { id: 1 }, data: { downFrom: from } });
+      next = await waiting(scope, 5, kind, { order: { down: true, from } });
+    }
+    candidates.push(...next);
+  }
   for (const candidate of candidates) {
     const taken = await prisma.$queryRaw<{ bidId: string }[]>`
       INSERT INTO "auto_make_claims" ("bidId", "worker", "claimedAt", "updatedAt")

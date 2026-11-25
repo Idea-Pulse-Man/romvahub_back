@@ -744,6 +744,14 @@ model AutoMakeState {
   /// fill in application forms (the person still submits each one).
   applyEnabled Boolean @default(false)
 
+  /// ▲ / ▼ on romva.space: "up" — No 1 first, down the Applications list;
+  /// "down" — the highest number first, then lower.
+  makeOrder String    @default("up")
+  /// Going down: only applications filed by then. Set when ▼ is chosen or
+  /// Start pressed, so applications scraped meanwhile never take the lead;
+  /// moved on once nothing older is left.
+  downFrom  DateTime?
+
   /// The maker's last check-in. Older than a couple of minutes: not running.
   workerSeenAt     DateTime?
   /// The application being made now, if any.

@@ -19,11 +19,15 @@ import { retryAllNow } from './auto-make-queue.js';
  */
 const ONLINE_WITHIN_MS = 4 * 60_000;
 
+export type MakeOrder = 'up' | 'down';
+
 export interface AutoMakeStatus {
   /** Start resume / Stop: the workers make Resumes and cover letters. */
   enabled: boolean;
   /** Start apply / Stop: the desktop agents open and fill in application forms. */
   applyEnabled: boolean;
+  /** ▲ / ▼: No 1 first ("up"), or the highest number first ("down"). */
+  order: MakeOrder;
   /** Whether the maker (the computer with the ChatGPT window) checked in recently. */
   workerOnline: boolean;
   workerSeenAt: string | null;
@@ -47,6 +51,7 @@ export async function getAutoMakeStatus(): Promise<AutoMakeStatus> {
   return {
     enabled: state.enabled,
     applyEnabled: state.applyEnabled,
+    order: state.makeOrder === 'down' ? 'down' : 'up',
     workerOnline: online,
     workerSeenAt: state.workerSeenAt?.toISOString() ?? null,
     current: online && state.currentBidId ? { bidId: state.currentBidId, company: state.currentCompany } : null,
@@ -54,9 +59,20 @@ export async function getAutoMakeStatus(): Promise<AutoMakeStatus> {
   };
 }
 
-/** Either switch, or both; one left out keeps its value. */
-export async function setSwitches(next: { enabled?: boolean; applyEnabled?: boolean }): Promise<AutoMakeStatus> {
-  await prisma.autoMakeState.upsert({ where: { id: 1 }, create: { id: 1, ...next }, update: next });
+/**
+ * Any of the switches; one left out keeps its value. ▼ chosen, or Start
+ * pressed while at ▼: going down starts from the top as it is now.
+ */
+export async function setSwitches(next: { enabled?: boolean; applyEnabled?: boolean; order?: MakeOrder }): Promise<AutoMakeStatus> {
+  const { order, ...switches } = next;
+  const current = await row();
+  const down = (order ?? current.makeOrder) === 'down';
+  const data = {
+    ...switches,
+    ...(order ? { makeOrder: order } : {}),
+    ...(down && (order === 'down' || next.enabled) ? { downFrom: new Date() } : {}),
+  };
+  await prisma.autoMakeState.update({ where: { id: 1 }, data });
   // Start resume: everything missing a Resume or a cover letter is tried again
   // now, earlier failures included.
   if (next.enabled) await retryAllNow();
@@ -79,9 +95,9 @@ export async function reportWorker(report: {
 }
 
 const SetAutoMakeSchema = z
-  .object({ enabled: z.boolean().optional(), applyEnabled: z.boolean().optional() })
-  .refine((body) => body.enabled !== undefined || body.applyEnabled !== undefined, {
-    message: 'Send enabled, applyEnabled, or both.',
+  .object({ enabled: z.boolean().optional(), applyEnabled: z.boolean().optional(), order: z.enum(['up', 'down']).optional() })
+  .refine((body) => body.enabled !== undefined || body.applyEnabled !== undefined || body.order !== undefined, {
+    message: 'Send enabled, applyEnabled, order, or several.',
   });
 
 export const autoMakeRouter: Router = Router();

@@ -31,11 +31,15 @@ export const MfaVerifySchema = z.object({
 
 export const UserRoleSchema = z.enum(['user', 'admin']);
 
+/** A plain User's job: Bidder (places applications) or Caller (takes the calls). Same access. */
+export const UserKindSchema = z.enum(['bidder', 'caller']);
+
 export const AuthUserSchema = z.object({
   id: z.uuid(),
   email: z.email(),
   role: UserRoleSchema,
   superAdmin: z.boolean(),
+  kind: UserKindSchema,
   createdAt: z.iso.datetime(),
 });
 
@@ -54,3 +58,4 @@ export type Credentials = z.infer<typeof CredentialsSchema>;
 export type LoginInput = z.infer<typeof LoginSchema>;
 export type MfaVerifyInput = z.infer<typeof MfaVerifySchema>;
 export type UserRole = z.infer<typeof UserRoleSchema>;
+export type UserKind = z.infer<typeof UserKindSchema>;

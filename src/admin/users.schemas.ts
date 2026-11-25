@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { UserKindSchema, UserRoleSchema } from '../auth/auth.schemas.js';
 
 const PASSWORD = z
   .string()
@@ -9,27 +10,32 @@ export const UserAccountStatusSchema = z.enum(['active', 'suspended']);
 
 /**
  * Creating a platform User (login account). Credentials only — Profiles are a
- * separate concept and are not filled in here. Role is always `user`; the sole
- * Admin is created/promoted via `yarn admin`, not this endpoint. New accounts
- * start `active`.
+ * separate concept and are not filled in here. Role defaults to `user` and
+ * kind to `bidder`; any admin may make another admin. New accounts start
+ * `active`.
  */
 export const CreateUserSchema = z.object({
   email: z.email('Must be a valid email address.').max(254),
   password: PASSWORD,
+  role: UserRoleSchema.default('user'),
+  kind: UserKindSchema.default('bidder'),
 });
 
 /**
- * Every field optional: change email, set a new password, or change account
- * status (active / suspended). Role cannot be changed here.
+ * Every field optional: change email, set a new password, change account
+ * status (active / suspended), role (admin / user) or kind (bidder / caller).
+ * Any admin may change roles, but not their own and not the Super Admin's.
  */
 export const UpdateUserSchema = z
   .object({
     email: z.email('Must be a valid email address.').max(254).optional(),
     password: PASSWORD.optional(),
     status: UserAccountStatusSchema.optional(),
+    role: UserRoleSchema.optional(),
+    kind: UserKindSchema.optional(),
   })
   .refine((value) => Object.keys(value).length > 0, {
-    message: 'Supply at least one of email, password or status.',
+    message: 'Supply at least one of email, password, status, role or kind.',
   });
 
 export const UserIdParamsSchema = z.object({ id: z.uuid('Not a valid user id.') });

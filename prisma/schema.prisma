@@ -330,6 +330,20 @@ model Bid {
   coverLetterDocument Json?
 
   /**
+   * The Resume check (`src/resume/resume-check.ts`): "ok" or "flagged" (needs a
+   * remake), with the reasons in words. Null until checked, and again when the
+   * Resume is deleted. A Resume made by the maker is checked as it is saved.
+   */
+  resumeCheckStatus  String?
+  resumeCheckReasons String[]  @default([])
+  resumeCheckedAt    DateTime?
+  /// SHA-256 of the Resume's text, to spot the same Resume on two applications.
+  resumeTextHash     String?
+  /// "Looks fine" in the one-by-one review: this text (and letter) passes from
+  /// now on, whatever the rules say, until the Resume or letter changes.
+  resumeCheckAcceptedHash String?
+
+  /**
    * The conversation held while filling in this application's form, as
    * `[{ "role": "user" | "assistant", "content": "..." }]`.
    *
@@ -375,6 +389,7 @@ model Bid {
   @@index([profileId, status])
   @@index([profileId, bidDate])
   @@index([status, postedAt])
+  @@index([resumeTextHash])
   @@unique([profileId, number])
   /// The automatic Resume maker's hold on this application, while a worker makes it.
   autoMakeClaim AutoMakeClaim?
@@ -791,6 +806,10 @@ model AutoMakeClaim {
   /// application (earliest click first), even at Stop. Cleared when it is
   /// made (the row goes) or when the attempt fails.
   requestedAt DateTime?
+  /// "Remake" clicked (or the Resume check flagged it): the Resume and its
+  /// letter are made again even though one is stored; the old ones stay until
+  /// the new ones are saved. Cleared with the row, or when the attempt fails.
+  remake      Boolean   @default(false)
 
   updatedAt DateTime @updatedAt
 

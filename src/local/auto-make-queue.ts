@@ -48,13 +48,18 @@ async function currentOrder(): Promise<ClaimOrder> {
   return { down: state?.makeOrder === 'down', from: state?.downFrom ?? null };
 }
 
+/** No Resume yet — or "Remake" asked for one again (the old one stays until the new one is saved). */
 const NEEDS_RESUME: PrismaTypes.BidWhereInput = {
-  resumeDocument: { equals: PrismaTypes.AnyNull },
-  resumeFiles: { none: {} },
+  OR: [
+    { resumeDocument: { equals: PrismaTypes.AnyNull }, resumeFiles: { none: {} } },
+    { autoMakeClaim: { remake: true } },
+  ],
 };
 const NEEDS_LETTER: PrismaTypes.BidWhereInput = {
   resumeFiles: { some: {} },
   coverLetterDocument: { equals: PrismaTypes.AnyNull },
+  // A remake makes the Resume first, then its letter.
+  NOT: [{ autoMakeClaim: { remake: true } }],
 };
 
 /**
@@ -95,12 +100,11 @@ async function waiting(
             : { status: 'DRAFT', createdAt: { gte: new Date(now - LOOKBACK_DAYS * 24 * 60 * 60_000) } }),
           jobDescription: { not: null },
           NOT: [{ jobDescription: '' }],
-          ...(kind === 'resume' ? NEEDS_RESUME : kind === 'letter' ? NEEDS_LETTER : {}),
-          ...(kind === 'any' ? { AND: [{ OR: [NEEDS_RESUME, NEEDS_LETTER] }] } : {}),
           ...(requested
             ? { autoMakeClaim: { requestedAt: { not: null }, AND: free } }
             : { OR: [{ autoMakeClaim: null }, { autoMakeClaim: { AND: free } }] }),
         },
+        kind === 'resume' ? NEEDS_RESUME : kind === 'letter' ? NEEDS_LETTER : { OR: [NEEDS_RESUME, NEEDS_LETTER] },
         ...(!requested && order.down && order.from ? [{ createdAt: { lte: order.from } }] : []),
       ],
     },
@@ -117,9 +121,14 @@ async function waiting(
       userId: true,
       user: { select: { role: true } },
       resumeFiles: { select: { id: true }, take: 1 },
+      autoMakeClaim: { select: { remake: true } },
     },
   });
-  return rows.map(({ resumeFiles, ...row }) => ({ ...row, letterOnly: resumeFiles.length > 0 }));
+  return rows.map(({ resumeFiles, autoMakeClaim, ...row }) => ({
+    ...row,
+    remake: Boolean(autoMakeClaim?.remake),
+    letterOnly: resumeFiles.length > 0 && !autoMakeClaim?.remake,
+  }));
 }
 
 export type ClaimedApplication = Awaited<ReturnType<typeof waiting>>[number];
@@ -217,7 +226,7 @@ export async function releaseClaim(
       WITH before AS (SELECT "bidId", "requestedAt" FROM "auto_make_claims" WHERE "bidId" = ${bidId}::uuid)
       UPDATE "auto_make_claims" c
       SET "claimedAt" = NULL, "attempts" = c."attempts" + 1, "failedAt" = ${NOW_UTC}, "lastError" = ${error},
-          "requestedAt" = NULL, "updatedAt" = ${NOW_UTC}
+          "requestedAt" = NULL, "remake" = false, "updatedAt" = ${NOW_UTC}
       FROM before
       WHERE c."bidId" = before."bidId" ${heldBy(worker)}
       RETURNING (before."requestedAt" IS NOT NULL) AS "requested"`;
@@ -276,8 +285,8 @@ async function touchBid(bidId: string): Promise<void> {
  * other waiting one — even at Stop. Earlier failures are forgotten, so no
  * back-off holds it up. One being made right now keeps its holder.
  */
-export async function requestMake(bidId: string): Promise<void> {
-  const reset = { requestedAt: new Date(), attempts: 0, failedAt: null, lastError: null };
+export async function requestMake(bidId: string, { remake = false }: { remake?: boolean } = {}): Promise<void> {
+  const reset = { requestedAt: new Date(), attempts: 0, failedAt: null, lastError: null, ...(remake ? { remake: true } : {}) };
   await prisma.autoMakeClaim.upsert({ where: { bidId }, create: { bidId, ...reset }, update: reset });
   await touchBid(bidId);
 }
@@ -285,8 +294,8 @@ export async function requestMake(bidId: string): Promise<void> {
 /** The request taken back: the application waits its normal turn again. */
 export async function cancelMakeRequest(bidId: string): Promise<void> {
   const { count } = await prisma.autoMakeClaim.updateMany({
-    where: { bidId, requestedAt: { not: null } },
-    data: { requestedAt: null },
+    where: { bidId, OR: [{ requestedAt: { not: null } }, { remake: true }] },
+    data: { requestedAt: null, remake: false },
   });
   if (count > 0) await touchBid(bidId);
 }

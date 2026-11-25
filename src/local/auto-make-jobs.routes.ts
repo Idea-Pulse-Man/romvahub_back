@@ -114,6 +114,7 @@ async function claimPrepared(actor: Actor, worker: string, kind: ClaimKind, requ
         profileFolderName: job.profileFolderName,
         folderName: job.folderName,
         letterOnly,
+        ...(claimed.remake ? { remake: true } : {}),
         ...(letterOnly ? { coverLetterMessage } : { resumeMessage: job.resumeMessage }),
       };
     } catch (error) {

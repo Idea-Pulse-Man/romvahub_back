@@ -216,6 +216,10 @@ export interface Bid {
    * other waiting one. Absent once it is made, or when the attempt failed.
    */
   autoMakeRequested?: boolean;
+  /** "Remake" asked for: its Resume and letter are made again (the old ones stay until then). */
+  remakeRequested?: boolean;
+  /** The Resume check (`src/resume/resume-check.ts`): "flagged" needs a remake, with the reasons. */
+  resumeCheck?: { status: 'ok' | 'flagged'; reasons: string[]; checkedAt: string };
   /**
    * How many turns the conversation about this application ran to — the count,
    * not the transcript. Same reasoning as `hasResume`: the list is loaded whole

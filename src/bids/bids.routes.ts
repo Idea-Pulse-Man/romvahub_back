@@ -15,6 +15,7 @@ import { MAX_PHOTO_BYTES, PHOTO_CONTENT_TYPES } from '../storage/s3.client.js';
 import { ResumePayloadSchema } from '../resume/resume.schemas.js';
 import { CoverLetterPayloadSchema } from '../cover-letter/cover-letter.schemas.js';
 import type { ResumeFileFormat } from '../domain/types.js';
+import { checkBidQuietly } from '../resume/resume-check.js';
 import {
   BidIdParamsSchema,
   BidResumeQuerySchema,
@@ -377,7 +378,10 @@ bidsRouter.post(
     }
     if (files.length === 0) throw new BadRequestError('No Resume file was uploaded. Send `pdf` and/or `docx`.');
 
-    res.json(await bidsService.replaceResumeFiles(currentActor(req), id, files));
+    const actor = currentActor(req);
+    await bidsService.replaceResumeFiles(actor, id, files);
+    await checkBidQuietly(id);
+    res.json(await bidsService.getBid(actor, id));
   },
 );
 
@@ -394,13 +398,20 @@ bidsRouter.delete('/:id/resume', validate({ params: BidIdParamsSchema }), async 
 /** Deletes the application's cover letter; the automatic maker writes it again. The bid comes back without it. */
 bidsRouter.delete('/:id/cover-letter', validate({ params: BidIdParamsSchema }), async (req, res) => {
   const { id } = (req as ValidatedRequest<unknown, BidIdParams>).valid.params;
-  res.json(await bidsService.deleteCoverLetter(currentActor(req), id));
+  const actor = currentActor(req);
+  await bidsService.deleteCoverLetter(actor, id);
+  // The letter's reasons go with it; the Resume's stay.
+  await checkBidQuietly(id);
+  res.json(await bidsService.getBid(actor, id));
 });
 
 /** Removes every synced Resume file from an application. The bid comes back without them. */
 bidsRouter.delete('/:id/resume-files', validate({ params: BidIdParamsSchema }), async (req, res) => {
   const { id } = (req as ValidatedRequest<unknown, BidIdParams>).valid.params;
-  res.json(await bidsService.removeResumeFiles(currentActor(req), id));
+  const actor = currentActor(req);
+  await bidsService.removeResumeFiles(actor, id);
+  await checkBidQuietly(id);
+  res.json(await bidsService.getBid(actor, id));
 });
 
 /**

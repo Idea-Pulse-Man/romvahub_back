@@ -291,6 +291,19 @@ export async function requestMake(bidId: string, { remake = false }: { remake?: 
   await touchBid(bidId);
 }
 
+/**
+ * Stop for the remakes: every remake asked for in `scope` taken back (the old
+ * Resumes stay). One a worker is making right now keeps its holder, and is
+ * saved if the worker finishes it. Returns how many were taken back.
+ */
+export async function cancelRemakes(scope: PrismaTypes.BidWhereInput): Promise<number> {
+  const { count } = await prisma.autoMakeClaim.updateMany({
+    where: { remake: true, bid: scope },
+    data: { requestedAt: null, remake: false },
+  });
+  return count;
+}
+
 /** The request taken back: the application waits its normal turn again. */
 export async function cancelMakeRequest(bidId: string): Promise<void> {
   const { count } = await prisma.autoMakeClaim.updateMany({

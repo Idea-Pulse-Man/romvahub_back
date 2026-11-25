@@ -23,6 +23,10 @@ import { prisma } from '../prisma.js';
  *  - a cover letter written for another company, never naming this one, with
  *    placeholders, or almost empty.
  *
+ * The ignore list (`resume_check_settings.ignore`, set on the Resume Maker
+ * page): a placeholder or a reason that has one of its words or phrases is
+ * not flagged.
+ *
  * Stored on the application (`resumeCheckStatus`, `resumeCheckReasons`,
  * `resumeCheckedAt`, `resumeTextHash`). A Resume the maker makes is checked as
  * it is saved; the rest by "Check all" on the Resume Maker page.
@@ -81,11 +85,53 @@ export async function docxText(bytes: Buffer): Promise<string> {
   return lines.join('\n');
 }
 
-/** Up to three of the draft marks in `text`, quoted. */
-function draftMarks(text: string): string[] {
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** `phrase` in `text` as a whole word (or words), any case: "C1" is in "at C1." but not in "C10". */
+function hasPhrase(text: string, phrase: string): boolean {
+  const p = phrase.trim();
+  if (!p) return false;
+  const edge = (c: string) => (/[\p{L}\p{N}]/u.test(c) ? '(?<![\\p{L}\\p{N}])' : '');
+  const tail = (c: string) => (/[\p{L}\p{N}]/u.test(c) ? '(?![\\p{L}\\p{N}])' : '');
+  return new RegExp(`${edge(p[0]!)}${escapeRegExp(p)}${tail(p[p.length - 1]!)}`, 'iu').test(text);
+}
+
+/** The ignore list, cleaned: trimmed, no blanks or repeats, at most 200 of up to 120 characters. */
+export function cleanIgnore(list: unknown): string[] {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of list) {
+    if (typeof item !== 'string') continue;
+    const value = item.trim().slice(0, 120);
+    if (!value || seen.has(value.toLowerCase())) continue;
+    seen.add(value.toLowerCase());
+    out.push(value);
+  }
+  return out.slice(0, 200);
+}
+
+export async function loadIgnore(): Promise<string[]> {
+  const row = await prisma.resumeCheckSettings.findUnique({ where: { id: 1 }, select: { ignore: true } });
+  return cleanIgnore(row?.ignore);
+}
+
+export async function saveIgnore(list: string[]): Promise<string[]> {
+  const ignore = cleanIgnore(list);
+  await prisma.resumeCheckSettings.upsert({ where: { id: 1 }, create: { id: 1, ignore }, update: { ignore } });
+  return ignore;
+}
+
+/** Up to three of the draft marks in `text`, quoted — none that has a phrase from `ignore`. */
+function draftMarks(text: string, ignore: string[] = []): string[] {
   const found = new Set<string>();
   for (const mark of DRAFT_MARKS) {
-    for (const match of text.matchAll(mark)) found.add(match[0].trim().slice(0, 60));
+    for (const match of text.matchAll(mark)) {
+      const value = match[0].trim().slice(0, 60);
+      if (!ignore.some((phrase) => hasPhrase(match[0], phrase))) found.add(value);
+    }
   }
   return [...found].slice(0, 3);
 }
@@ -94,12 +140,21 @@ function quoteList(items: string[]): string {
   return items.map((item) => `“${item}”`).join(', ');
 }
 
-/** Whether `text` names `company` (its key, or its first word when that is distinctive). */
-function mentions(text: string, company: string): boolean {
+/**
+ * Whether `text` names `company`: its key, its letters run together ("K&L
+ * Gates" as "klgates", "RS&H" as "rsh"), the name as a word ("C1", "3M"), or
+ * its first word when that is distinctive.
+ */
+export function mentions(text: string, company: string): boolean {
+  const name = company.trim();
+  if (!name) return true;
   const flat = squash(text);
-  const key = companyKey(company);
+  const key = companyKey(name);
   if (key.length >= 3 && flat.includes(key)) return true;
-  const first = squash(company.split(/\s+/)[0] ?? '');
+  const whole = squash(name);
+  if (whole.length >= 3 && flat.includes(whole)) return true;
+  if (hasPhrase(text, name)) return true;
+  const first = squash(name.split(/\s+/)[0] ?? '');
   return first.length >= 4 && flat.includes(first);
 }
 
@@ -133,8 +188,11 @@ export function resumeProblems(
     files: string[];
     letter: unknown;
     duplicateOf?: { number: number; company: string } | null;
+    /** Words and phrases never flagged (the ignore list). */
+    ignore?: string[];
   },
 ): string[] {
+  const ignore = context.ignore ?? [];
   const reasons: string[] = [];
   const lines = text.split('\n');
 
@@ -147,7 +205,7 @@ export function resumeProblems(
   if (count < 150) reasons.push(`the Resume is almost empty (${count} words)`);
   else for (const section of emptySections(lines)) reasons.push(`the ${section} section is empty`);
 
-  const marks = draftMarks(text);
+  const marks = draftMarks(text, ignore);
   if (marks.length) reasons.push(`placeholders or notes in the Resume: ${quoteList(marks)}`);
 
   const person = context.person;
@@ -178,11 +236,12 @@ export function resumeProblems(
     reasons.push(`the same Resume text as #${context.duplicateOf.number} (${context.duplicateOf.company})`);
   }
 
-  reasons.push(...letterProblems(context.letter, context.company));
-  return reasons;
+  reasons.push(...letterProblems(context.letter, context.company, ignore));
+  // A reason with a word or phrase from the ignore list ("C1", "never names") is dropped.
+  return reasons.filter((reason) => !ignore.some((phrase) => hasPhrase(reason, phrase)));
 }
 
-function letterProblems(letter: unknown, company: string): string[] {
+function letterProblems(letter: unknown, company: string, ignore: string[]): string[] {
   if (!letter || typeof letter !== 'object') return [];
   const raw = letter as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === 'string' ? v : '');
@@ -196,7 +255,7 @@ function letterProblems(letter: unknown, company: string): string[] {
   } else if (paragraphs.length && !mentions(paragraphs.join(' '), company)) {
     problems.push(`the cover letter never names ${company}`);
   }
-  const marks = draftMarks(body);
+  const marks = draftMarks(body, ignore);
   if (marks.length) problems.push(`placeholders in the cover letter: ${quoteList(marks)}`);
   return problems;
 }
@@ -255,7 +314,7 @@ async function resumeText(bidId: string, document: unknown): Promise<string | nu
  * it has no Resume (and the old result, if any, is cleared). The caller has
  * already checked that the user may see the application.
  */
-export async function checkBid(bidId: string): Promise<ResumeCheck | null> {
+export async function checkBid(bidId: string, ignoreList?: string[]): Promise<ResumeCheck | null> {
   const bid = await prisma.bid.findUnique({ where: { id: bidId }, select: checkSelect });
   if (!bid) return null;
   let text: string | null = null;
@@ -287,8 +346,9 @@ export async function checkBid(bidId: string): Promise<ResumeCheck | null> {
         companies: source.workExperience.map((w) => w.company),
       }
     : null;
+  const ignore = ignoreList ?? (await loadIgnore());
   let reasons = text.trim()
-    ? resumeProblems(text, { company: bid.company, person, files, letter: bid.coverLetterDocument, duplicateOf: twin })
+    ? resumeProblems(text, { company: bid.company, person, files, letter: bid.coverLetterDocument, duplicateOf: twin, ignore })
     : ['the Word file could not be read'];
   // Looked at and passed by a person ("Looks fine"): this same Resume and letter stay passed.
   if (reasons.length && bid.resumeCheckAcceptedHash && bid.resumeCheckAcceptedHash === acceptedKey(hash, bid.coverLetterDocument)) {
@@ -351,11 +411,12 @@ export async function checkAll(scope: PrismaTypes.BidWhereInput): Promise<{ chec
     select: { id: true },
     orderBy: { number: 'asc' },
   });
+  const ignore = await loadIgnore();
   let ok = 0;
   let flagged = 0;
   // A few at a time: each reads one Word file (~100 KB) from the database.
   for (let i = 0; i < rows.length; i += 4) {
-    const results = await Promise.all(rows.slice(i, i + 4).map((row) => checkBid(row.id).catch(() => null)));
+    const results = await Promise.all(rows.slice(i, i + 4).map((row) => checkBid(row.id, ignore).catch(() => null)));
     for (const result of results) {
       if (result?.status === 'ok') ok += 1;
       else if (result?.status === 'flagged') flagged += 1;

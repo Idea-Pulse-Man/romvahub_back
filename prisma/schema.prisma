@@ -745,6 +745,19 @@ model Settings {
   @@map("settings")
 }
 
+/// The Resume check's own ignore list (one row, `id = 1`), set on the desktop
+/// app's Resume Maker page: a placeholder, word or reason that has one of these
+/// words or phrases is not flagged (a company name like "C1", a bracketed
+/// "[Remote]" the job really has, "never names" to skip that rule).
+model ResumeCheckSettings {
+  id     Int      @id @default(1)
+  ignore String[] @default([])
+
+  updatedAt DateTime @updatedAt
+
+  @@map("resume_check_settings")
+}
+
 /// The automatic Resume maker's switch and heartbeat. One row (`id = 1`).
 ///
 /// The maker runs on one computer — the one with the ChatGPT window — while

@@ -1,6 +1,6 @@
 import { prisma } from '../prisma.js';
 import { RefreshRaceError, StaleRefreshError, UnauthorizedError } from '../http/errors.js';
-import type { UserKind, UserRole } from './auth.schemas.js';
+import type { UserRole } from './auth.schemas.js';
 import { enrichLoginContext } from './login-enrichment.js';
 import { hashPassword, verifyPassword } from './password.js';
 import { createRefreshToken, hashRefreshToken, signAccessToken } from './tokens.js';
@@ -13,8 +13,6 @@ export interface AuthUser {
   role: UserRole;
   /** The Super Admin: also makes and revokes Profile tokens (the Tokens page). */
   superAdmin: boolean;
-  /** Bidder or Caller (plain Users; admins read `bidder`). */
-  kind: UserKind;
   createdAt: string;
 }
 
@@ -40,7 +38,6 @@ function toAuthUser(user: {
   email: string;
   role: 'USER' | 'ADMIN';
   superAdmin: boolean;
-  kind: 'BIDDER' | 'CALLER';
   createdAt: Date;
 }): AuthUser {
   return {
@@ -48,7 +45,6 @@ function toAuthUser(user: {
     email: user.email,
     role: toApiRole(user.role),
     superAdmin: user.superAdmin,
-    kind: user.kind === 'CALLER' ? 'caller' : 'bidder',
     createdAt: user.createdAt.toISOString(),
   };
 }
@@ -197,7 +193,7 @@ export async function verifyMfa(challengeId: string, code: string, context: Logi
 
 /** A sign-in that passed every check: recorded, and its session issued. */
 async function completeLogin(
-  user: { id: string; email: string; role: 'USER' | 'ADMIN'; superAdmin: boolean; kind: 'BIDDER' | 'CALLER'; createdAt: Date },
+  user: { id: string; email: string; role: 'USER' | 'ADMIN'; superAdmin: boolean; createdAt: Date },
   context: LoginContext,
 ): Promise<AuthResult> {
   const details = await enrichLoginContext(context);

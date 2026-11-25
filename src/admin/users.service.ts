@@ -8,15 +8,14 @@
  *
  * Rules:
  * - Accounts are created here (or via `yarn admin`). There is no public sign-up.
- * - Roles: Super Admin (an admin with the flag), Admin, and User — a Bidder or a
- *   Caller. Any admin may make or unmake admins, except their own role and the
- *   Super Admin's.
+ * - Roles: Super Admin (an admin with the flag), Admin, and User. Any admin may
+ *   make or unmake admins, except their own role and the Super Admin's.
  * - An admin cannot delete or suspend their own account, and an admin account
  *   is made a User before it can be suspended or deleted.
  */
 import { prisma } from '../prisma.js';
 import { hashPassword } from '../auth/password.js';
-import type { UserKind, UserRole } from '../auth/auth.schemas.js';
+import type { UserRole } from '../auth/auth.schemas.js';
 import { formatDateOnly } from '../domain/dates.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../http/errors.js';
 import { signPhotoUrl } from '../storage/s3.client.js';
@@ -32,8 +31,6 @@ export interface AdminUserSummary {
   role: UserRole;
   /** The Super Admin (always an admin): also makes Profile tokens. */
   superAdmin: boolean;
-  /** Bidder or Caller, for a plain User. */
-  kind: UserKind;
   status: UserAccountStatus;
   createdAt: string;
   /** Most recent successful sign-in, if any. */
@@ -84,14 +81,6 @@ function toApiRole(role: 'USER' | 'ADMIN'): UserRole {
   return role === 'ADMIN' ? 'admin' : 'user';
 }
 
-function toApiKind(kind: 'BIDDER' | 'CALLER'): UserKind {
-  return kind === 'CALLER' ? 'caller' : 'bidder';
-}
-
-function toDbKind(kind: UserKind): 'BIDDER' | 'CALLER' {
-  return kind === 'caller' ? 'CALLER' : 'BIDDER';
-}
-
 function toApiStatus(status: 'ACTIVE' | 'SUSPENDED'): UserAccountStatus {
   return status === 'SUSPENDED' ? 'suspended' : 'active';
 }
@@ -105,7 +94,6 @@ const summarySelect = {
   email: true,
   role: true,
   superAdmin: true,
-  kind: true,
   status: true,
   createdAt: true,
   profile: {
@@ -132,7 +120,6 @@ type SummaryRow = {
   email: string;
   role: 'USER' | 'ADMIN';
   superAdmin: boolean;
-  kind: 'BIDDER' | 'CALLER';
   status: 'ACTIVE' | 'SUSPENDED';
   createdAt: Date;
   profile: {
@@ -173,7 +160,6 @@ async function toSummary(row: SummaryRow): Promise<AdminUserSummary> {
     email: row.email,
     role: toApiRole(row.role),
     superAdmin: row.superAdmin,
-    kind: toApiKind(row.kind),
     status: toApiStatus(row.status),
     createdAt: row.createdAt.toISOString(),
     lastLoginAt: last?.createdAt.toISOString() ?? null,
@@ -278,8 +264,7 @@ export async function listLoginHistory(userId: string): Promise<LoginHistoryEntr
 }
 
 /**
- * Creates a platform account with credentials only (an Admin, or a User who is
- * a Bidder or a Caller).
+ * Creates a platform account (an Admin or a User) with credentials only.
  *
  * An empty legacy Resume stub and default settings are attached so existing
  * Resume / settings routes do not 404. The stub does **not** copy the login
@@ -297,7 +282,6 @@ export async function createUser(input: CreateUserInput): Promise<AdminUserDetai
       email,
       passwordHash: await hashPassword(input.password),
       role: input.role === 'admin' ? 'ADMIN' : 'USER',
-      kind: toDbKind(input.kind),
       profile: {
         create: {},
       },
@@ -351,7 +335,6 @@ export async function updateUser(
       ...(input.password ? { passwordHash: await hashPassword(input.password) } : {}),
       ...(input.status ? { status: toDbStatus(input.status) } : {}),
       ...(roleChanges ? { role: newRole } : {}),
-      ...(input.kind ? { kind: toDbKind(input.kind) } : {}),
     },
   });
 

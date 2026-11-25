@@ -1,6 +1,12 @@
 /**
- * Candidate photos, in an S3-compatible bucket.
+ * Candidate photos and proof screenshots, kept in this server's own database
+ * (`stored_files`) and served through signed `/api/files/…` links.
  *
+ * The S3 settings below are only for files uploaded before that: when they are
+ * set, a file missing from the database is read from the bucket once and copied
+ * in (see `readStoredFile`, and `scripts/move-files-to-db.ts` to copy them all).
+ *
+ * Former notes on the bucket:
  * Written against an explicit `AWS_ENDPOINT_URL_S3` rather than AWS's own
  * region host, so the same five variables point at Tigris, R2, MinIO or plain
  * AWS without a code change. `forcePathStyle` is what makes the non-AWS ones
@@ -11,12 +17,12 @@
  * first use and `s3()` is what turns "not switched on" into a 503 naming the
  * variables it wanted.
  */
-import { randomUUID } from 'node:crypto';
-import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { DeleteObjectCommand, GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { env } from '../env.js';
 import { ServiceUnavailableError } from '../http/errors.js';
 import { logger } from '../logger.js';
+import { prisma } from '../prisma.js';
 
 /** What a photo may be. Anything else is a 400 before a byte reaches the bucket. */
 export const PHOTO_CONTENT_TYPES = [
@@ -115,69 +121,84 @@ export async function uploadProof(
 }
 
 async function putObject(key: string, body: Buffer, contentType: string): Promise<UploadedPhoto> {
-  const bucket = s3();
-
-  await bucket.send(
-    new PutObjectCommand({
-      Bucket: env.AWS_S3_BUCKET,
-      Key: key,
-      Body: body,
-      ContentType: contentType,
-      // The bucket stays private; the app hands out signed URLs instead. Said
-      // explicitly so a bucket whose default ACL is public does not quietly
-      // make every candidate photo world-readable.
-      ACL: 'private',
-    }),
-  );
-
+  await prisma.storedFile.create({ data: { key, contentType, size: body.length, bytes: new Uint8Array(body) } });
   return { key, url: (await signPhotoUrl(key)) as string };
 }
 
+/** The HMAC that makes a `/api/files/…` link work until `expires` (seconds). */
+export function fileSignature(key: string, expires: number): string {
+  return createHmac('sha256', env.JWT_ACCESS_SECRET).update(`file:${key}:${expires}`).digest('base64url');
+}
+
+/** True when a `/api/files/…` link's signature matches and it has not expired. */
+export function verifyFileSignature(key: string, expires: number, signature: string): boolean {
+  if (!Number.isFinite(expires) || expires * 1000 < Date.now()) return false;
+  const want = Buffer.from(fileSignature(key, expires));
+  const got = Buffer.from(signature);
+  return want.length === got.length && timingSafeEqual(want, got);
+}
+
 /**
- * A short-lived GET URL for a stored photo, or `undefined` when there is no
- * photo — or when storage is switched off in this deployment.
+ * A short-lived GET link for a stored photo or screenshot, or `undefined` when
+ * there is none. Relative (`/api/files/…`): the website is served by this same
+ * server, and the desktop app puts its server address in front.
  *
- * Returning `undefined` rather than throwing for the unconfigured case is
- * deliberate: this is called while reading a profile, and a deployment with no
- * bucket should still be able to load Settings.
+ * The expiry is rounded to the hour so the link stays the same for a while and
+ * the browser cache keeps working.
  */
 export async function signPhotoUrl(key: string | null | undefined): Promise<string | undefined> {
-  if (!key || !env.storageEnabled) return undefined;
+  if (!key) return undefined;
+  const ttl = env.S3_SIGNED_URL_TTL_SECONDS;
+  const expires = Math.ceil((Date.now() / 1000 + ttl) / 3600) * 3600;
+  const path = key.split('/').map(encodeURIComponent).join('/');
+  return `/api/files/${path}?e=${expires}&s=${fileSignature(key, expires)}`;
+}
 
+/**
+ * A stored file: from this database, or — for a file uploaded while photos
+ * still lived in the S3 bucket — from the bucket, copied into the database on
+ * the way so it is read from here next time. `null` when it exists nowhere.
+ */
+export async function readStoredFile(key: string): Promise<{ bytes: Buffer; contentType: string } | null> {
+  const row = await prisma.storedFile.findUnique({ where: { key }, select: { bytes: true, contentType: true } });
+  if (row) return { bytes: Buffer.from(row.bytes), contentType: row.contentType };
+  if (!env.storageEnabled) return null;
   try {
-    return await getSignedUrl(
-      s3(),
-      new GetObjectCommand({ Bucket: env.AWS_S3_BUCKET, Key: key }),
-      { expiresIn: env.S3_SIGNED_URL_TTL_SECONDS },
-    );
+    const response = await s3().send(new GetObjectCommand({ Bucket: env.AWS_S3_BUCKET, Key: key }));
+    const bytes = await response.Body?.transformToByteArray();
+    if (!bytes) return null;
+    const contentType = response.ContentType ?? 'application/octet-stream';
+    const body = Buffer.from(bytes);
+    await prisma.storedFile
+      .upsert({ where: { key }, create: { key, contentType, size: body.length, bytes: new Uint8Array(body) }, update: {} })
+      .catch((error: unknown) => logger.warn({ err: error, key }, 'Could not copy a bucket file into the database'));
+    return { bytes: body, contentType };
   } catch (error) {
-    // Signing is local arithmetic, so this is a misconfiguration rather than a
-    // network failure — and it must not take the whole profile down with it.
-    logger.error({ err: error, key }, 'Could not sign a photo URL');
-    return undefined;
+    logger.warn({ err: error, key }, 'A stored file is in neither the database nor the bucket');
+    return null;
   }
 }
 
-/**
- * The bytes of a stored object. For the backfill that fingerprints the proof
- * screenshots uploaded before fingerprints existed; the request path never
- * reads a screenshot back, it fingerprints the upload as it passes through.
- */
+/** The bytes of a stored file (for the proof fingerprint backfill). */
 export async function downloadObject(key: string): Promise<Buffer> {
-  const response = await s3().send(new GetObjectCommand({ Bucket: env.AWS_S3_BUCKET, Key: key }));
-  const bytes = await response.Body?.transformToByteArray();
-  if (!bytes) throw new Error(`The bucket answered with no body for ${key}.`);
-  return Buffer.from(bytes);
+  const file = await readStoredFile(key);
+  if (!file) throw new Error(`No stored file ${key}.`);
+  return file.bytes;
 }
 
 /**
- * Removes a stored photo. Failures are logged and swallowed: this runs after
- * the profile row has already stopped pointing at the object, so the only cost
- * of a failed delete is an orphan in the bucket — not a broken request.
+ * Removes a stored photo or screenshot. Failures are logged and swallowed: this
+ * runs after the row has already stopped pointing at the file, so the only cost
+ * of a failed delete is an orphan, not a broken request.
  */
 export async function deletePhoto(key: string | null | undefined): Promise<void> {
-  if (!key || !env.storageEnabled) return;
-
+  if (!key) return;
+  try {
+    await prisma.storedFile.deleteMany({ where: { key } });
+  } catch (error) {
+    logger.warn({ err: error, key }, 'Could not delete a replaced file from the database');
+  }
+  if (!env.storageEnabled) return;
   try {
     await s3().send(new DeleteObjectCommand({ Bucket: env.AWS_S3_BUCKET, Key: key }));
   } catch (error) {

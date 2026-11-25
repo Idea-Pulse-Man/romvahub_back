@@ -240,6 +240,9 @@ async function listWhere(actor: Actor, query: ListBidsQuery): Promise<PrismaType
     clauses.push({ resumeDocument: { equals: PrismaTypes.AnyNull }, resumeFiles: { none: {} } });
   }
 
+  if (query.needsRemake === true) clauses.push({ resumeCheckStatus: 'flagged' });
+  else if (query.needsRemake === false) clauses.push({ NOT: [{ resumeCheckStatus: 'flagged' }] });
+
   // The same employer however it was written — "Acme", "ACME, Inc.", "The Acme
   // Company" — but the whole name rather than a substring: "Meta" must not
   // report an application at Metabase as a duplicate. See `companyKey`.
@@ -897,7 +900,16 @@ export async function deleteResume(actor: Actor, bidId: string): Promise<Bid> {
     prisma.bidResumeFile.deleteMany({ where: { bidId: existing.id } }),
     prisma.bid.update({
       where: { id: existing.id },
-      data: { resumeDocument: PrismaTypes.DbNull, resumeMadeAt: null, updatedAt: new Date() },
+      data: {
+        resumeDocument: PrismaTypes.DbNull,
+        resumeMadeAt: null,
+        updatedAt: new Date(),
+        // Its check went with it.
+        resumeCheckStatus: null,
+        resumeCheckReasons: [],
+        resumeCheckedAt: null,
+        resumeTextHash: null,
+      },
     }),
     forgetAutoMakeFailures(existing.id),
   ]);

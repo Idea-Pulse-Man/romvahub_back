@@ -12,6 +12,7 @@ import { settingsForMake } from '../profiles/profile-prompts.service.js';
 import mammoth from 'mammoth';
 import { parseJsonAnswer } from './json-answer.js';
 import { resumeAnswerProblems, resumeRetryMessage } from './resume-answer-check.js';
+import { checkBidQuietly } from '../resume/resume-check.js';
 
 /**
  * One application's Resume and cover letter, as four steps around the two
@@ -228,6 +229,8 @@ export async function finishResume(job: MakeJob, answer: string): Promise<Finish
       data: docx,
     },
   ]);
+  // The Resume check, as it is saved: a bad one is flagged at once.
+  await checkBidQuietly(job.bid.id);
 
   return {
     bid,
@@ -308,6 +311,7 @@ export async function finishCoverLetter(job: MakeJob, answer: string): Promise<F
     ),
   );
   const bid = await bidsService.setBidCoverLetter(job.actor, job.bid.id, letter);
+  await checkBidQuietly(job.bid.id);
   return {
     bid,
     files: {

@@ -219,6 +219,11 @@ export const ListBidsQuerySchema = z.object({
       'Only applications that have a Resume (`true`) or have none yet (`false`). With `status=Draft`: ' +
         'the desktop app\'s "Ready to apply" and "Draft" tabs.',
     ),
+  needsRemake: z
+    .enum(['true', 'false'])
+    .transform((value) => value === 'true')
+    .optional()
+    .describe('Only applications whose Resume check flagged them (`true`): the desktop app Needs remake tab.'),
   sort: BidSortSchema.optional().describe(
     'Ordering. `bidDate` (the default) is newest first; `updatedAt` is the Pipeline board\'s, so a ' +
       'card just moved sits at the top of its column; `number` is the Applications table\'s: the ' +

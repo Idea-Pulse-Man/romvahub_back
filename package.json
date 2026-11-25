@@ -21,7 +21,8 @@
     "db:seed": "tsx prisma/seed.ts",
     "admin": "tsx scripts/create-admin.ts",
     "super-admin": "tsx scripts/super-admin.ts",
-    "proofs:fingerprint": "tsx scripts/fingerprint-proofs.ts"
+    "proofs:fingerprint": "tsx scripts/fingerprint-proofs.ts",
+    "files:to-db": "tsx scripts/move-files-to-db.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",

@@ -45,7 +45,7 @@ export const requireAuth: RequestHandler = (req: Request, _res: Response, next: 
   if (bearer && isProfileToken(bearer)) {
     resolveProfileToken(bearer)
       .then((identity) => {
-        assertTokenRoute(req);
+        assertTokenRoute(req, identity.profileId);
         req.user = {
           id: identity.userId,
           email: identity.email,

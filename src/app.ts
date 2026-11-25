@@ -33,6 +33,7 @@ import { autoMakeRouter } from './local/auto-make-state.js';
 import { autoMakeJobsRouter } from './local/auto-make-jobs.routes.js';
 import { autoApplyRouter } from './local/auto-apply.routes.js';
 import { openApiDocument } from './docs/openapi.js';
+import { filesRouter } from './storage/files.routes.js';
 
 // helmet's `exports` map carries no "types" condition, so a toolchain that
 // reads its CommonJS declarations from this ESM file — Vercel's function
@@ -120,6 +121,7 @@ export function createApp(): Express {
   api.use('/admin/profiles', adminProfilesRouter);
   api.use('/admin/tokens', adminTokensRouter);
   api.use('/sync', syncRouter);
+  api.use('/files', filesRouter);
   app.use('/api', api);
 
   // The desktop app: this server also serves the built website, so the window

@@ -211,6 +211,12 @@ export interface Bid {
    */
   hasCoverLetter?: boolean;
   /**
+   * "Make" was clicked on this application: the automatic maker makes its
+   * missing Resume and cover letter (or just the letter) next, before every
+   * other waiting one. Absent once it is made, or when the attempt failed.
+   */
+  autoMakeRequested?: boolean;
+  /**
    * How many turns the conversation about this application ran to — the count,
    * not the transcript. Same reasoning as `hasResume`: the list is loaded whole
    * by every screen, and a conversation per row would be paid for by all of

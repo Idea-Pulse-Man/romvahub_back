@@ -744,6 +744,14 @@ model AutoMakeState {
   /// fill in application forms (the person still submits each one).
   applyEnabled Boolean @default(false)
 
+  /// ▲ / ▼ on romva.space: "up" — No 1 first, down the Applications list;
+  /// "down" — the highest number first, then lower.
+  makeOrder String    @default("up")
+  /// Going down: only applications filed by then. Set when ▼ is chosen or
+  /// Start pressed, so applications scraped meanwhile never take the lead;
+  /// moved on once nothing older is left.
+  downFrom  DateTime?
+
   /// The maker's last check-in. Older than a couple of minutes: not running.
   workerSeenAt     DateTime?
   /// The application being made now, if any.
@@ -779,7 +787,25 @@ model AutoMakeClaim {
   lastError String?
   failedAt  DateTime?
 
+  /// "Make" clicked on romva.space: made before every other waiting
+  /// application (earliest click first), even at Stop. Cleared when it is
+  /// made (the row goes) or when the attempt fails.
+  requestedAt DateTime?
+
   updatedAt DateTime @updatedAt
 
   @@map("auto_make_claims")
+}
+
+/// Candidate photos and application proof screenshots, kept in this database
+/// on the server (no outside bucket). `key` is what `Profile.photoKey` and
+/// `Bid.proofKey` hold; the bytes are served through signed `/api/files/…` links.
+model StoredFile {
+  key         String   @id
+  contentType String
+  size        Int
+  bytes       Bytes
+  createdAt   DateTime @default(now())
+
+  @@map("stored_files")
 }

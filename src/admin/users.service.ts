@@ -7,10 +7,11 @@
  * until Profiles are remodelled.
  *
  * Rules:
- * - Accounts are created here (or via `yarn admin` for the sole Admin). There
- *   is no public sign-up.
- * - This API always creates role `user`. There is exactly one Admin.
- * - An admin cannot delete their own account.
+ * - Accounts are created here (or via `yarn admin`). There is no public sign-up.
+ * - Roles: Super Admin (an admin with the flag), Admin, and User. Any admin may
+ *   make or unmake admins, except their own role and the Super Admin's.
+ * - An admin cannot delete or suspend their own account, and an admin account
+ *   is made a User before it can be suspended or deleted.
  */
 import { prisma } from '../prisma.js';
 import { hashPassword } from '../auth/password.js';
@@ -28,6 +29,8 @@ export interface AdminUserSummary {
   id: string;
   email: string;
   role: UserRole;
+  /** The Super Admin (always an admin): also makes Profile tokens. */
+  superAdmin: boolean;
   status: UserAccountStatus;
   createdAt: string;
   /** Most recent successful sign-in, if any. */
@@ -90,6 +93,7 @@ const summarySelect = {
   id: true,
   email: true,
   role: true,
+  superAdmin: true,
   status: true,
   createdAt: true,
   profile: {
@@ -115,6 +119,7 @@ type SummaryRow = {
   id: string;
   email: string;
   role: 'USER' | 'ADMIN';
+  superAdmin: boolean;
   status: 'ACTIVE' | 'SUSPENDED';
   createdAt: Date;
   profile: {
@@ -154,6 +159,7 @@ async function toSummary(row: SummaryRow): Promise<AdminUserSummary> {
     id: row.id,
     email: row.email,
     role: toApiRole(row.role),
+    superAdmin: row.superAdmin,
     status: toApiStatus(row.status),
     createdAt: row.createdAt.toISOString(),
     lastLoginAt: last?.createdAt.toISOString() ?? null,
@@ -258,7 +264,7 @@ export async function listLoginHistory(userId: string): Promise<LoginHistoryEntr
 }
 
 /**
- * Creates a platform User with credentials only (always role `user`).
+ * Creates a platform account (an Admin or a User) with credentials only.
  *
  * An empty legacy Resume stub and default settings are attached so existing
  * Resume / settings routes do not 404. The stub does **not** copy the login
@@ -275,7 +281,7 @@ export async function createUser(input: CreateUserInput): Promise<AdminUserDetai
     data: {
       email,
       passwordHash: await hashPassword(input.password),
-      role: 'USER',
+      role: input.role === 'admin' ? 'ADMIN' : 'USER',
       profile: {
         create: {},
       },
@@ -294,16 +300,23 @@ export async function updateUser(
 ): Promise<AdminUserDetail> {
   const existing = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, role: true, status: true },
+    select: { id: true, role: true, status: true, superAdmin: true },
   });
   if (!existing) throw new NotFoundError('No such account.');
+
+  const newRole = input.role === undefined ? existing.role : input.role === 'admin' ? 'ADMIN' : 'USER';
+  const roleChanges = newRole !== existing.role;
+  if (roleChanges) {
+    if (userId === actorId) throw new BadRequestError('You cannot change your own role.');
+    if (existing.superAdmin) throw new BadRequestError('The Super Admin stays an admin.');
+  }
 
   if (input.status === 'suspended') {
     if (userId === actorId) {
       throw new BadRequestError('You cannot suspend your own account.');
     }
-    if (existing.role === 'ADMIN') {
-      throw new BadRequestError('The administrator account cannot be suspended.');
+    if (newRole === 'ADMIN') {
+      throw new BadRequestError('An admin account cannot be suspended. Make it a User first.');
     }
   }
 
@@ -321,12 +334,14 @@ export async function updateUser(
       ...(email ? { email } : {}),
       ...(input.password ? { passwordHash: await hashPassword(input.password) } : {}),
       ...(input.status ? { status: toDbStatus(input.status) } : {}),
+      ...(roleChanges ? { role: newRole } : {}),
     },
   });
 
-  // Password change or suspend: end live sessions so a stolen/open browser
-  // cannot keep using the account.
-  if (input.password || input.status === 'suspended') {
+  // Password change, suspend or new role: end live sessions so a stolen/open
+  // browser cannot keep using the account, and the role is read again at the
+  // next sign-in (the access token carries it).
+  if (input.password || input.status === 'suspended' || roleChanges) {
     await prisma.refreshToken.updateMany({
       where: { userId, revokedAt: null },
       data: { revokedAt: new Date() },
@@ -344,7 +359,7 @@ export async function updateUser(
  * bucket delete can fail, and half-deleting an account because S3 was briefly
  * unreachable is worse than leaving an orphan object behind.
  *
- * The sole Admin cannot be deleted.
+ * An admin account cannot be deleted; make it a User first.
  */
 export async function deleteUser(actorId: string, userId: string): Promise<void> {
   if (userId === actorId) {
@@ -357,9 +372,7 @@ export async function deleteUser(actorId: string, userId: string): Promise<void>
   });
   if (!target) throw new NotFoundError('No such account.');
   if (target.role === 'ADMIN') {
-    throw new BadRequestError(
-      'The administrator account cannot be deleted. Promote a different admin with yarn admin if you need to replace it.',
-    );
+    throw new BadRequestError('An admin account cannot be deleted. Make it a User first.');
   }
 
   const { count } = await prisma.user.deleteMany({ where: { id: userId } });

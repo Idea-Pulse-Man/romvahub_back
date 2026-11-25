@@ -87,6 +87,10 @@ const BidResponseSchema = z.object({
         'never the bytes. `GET /api/bids/{id}/resume?format=` serves them.',
     ),
   hasCoverLetter: z.boolean().optional(),
+  autoMakeRequested: z
+    .boolean()
+    .optional()
+    .describe('"Make" was clicked: the automatic maker makes this application next. `POST /api/auto-make/jobs/{bidId}/request`.'),
   proofUrl: z
     .url()
     .optional()

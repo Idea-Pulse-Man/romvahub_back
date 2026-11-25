@@ -339,6 +339,9 @@ model Bid {
   resumeCheckedAt    DateTime?
   /// SHA-256 of the Resume's text, to spot the same Resume on two applications.
   resumeTextHash     String?
+  /// "Looks fine" in the one-by-one review: this text (and letter) passes from
+  /// now on, whatever the rules say, until the Resume or letter changes.
+  resumeCheckAcceptedHash String?
 
   /**
    * The conversation held while filling in this application's form, as

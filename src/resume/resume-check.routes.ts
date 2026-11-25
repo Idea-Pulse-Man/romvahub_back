@@ -9,7 +9,7 @@ import { validate, type ValidatedRequest } from '../http/validate.js';
 import { cancelMakeRequest, requestMake } from '../local/auto-make-queue.js';
 import { logger } from '../logger.js';
 import { prisma } from '../prisma.js';
-import { checkAll, checkBid, HAS_RESUME } from './resume-check.js';
+import { acceptBid, checkAll, checkBid, HAS_RESUME } from './resume-check.js';
 
 /**
  * The Resume check and Remake, for the desktop app's Resume Maker page and
@@ -19,6 +19,7 @@ import { checkAll, checkBid, HAS_RESUME } from './resume-check.js';
  *   GET    /api/resume-check/summary?profileId   counts + the flagged Drafts
  *   POST   /api/resume-check/run      { profileId? }   check every Draft with a Resume
  *   POST   /api/resume-check/bids/:id                  check one application
+ *   POST   /api/resume-check/bids/:id/accept           "Looks fine": passed from now on (until it changes)
  *   POST   /api/resume-check/remake   { ids? | flagged: true, profileId? }
  *   DELETE /api/resume-check/remake/:id                take a remake back
  */
@@ -111,6 +112,13 @@ resumeCheckRouter.post('/bids/:id', validate({ params: IdParamsSchema }), async 
   const { id } = (req as ValidatedRequest<unknown, IdParams>).valid.params;
   await assertBidAccess(actor, id);
   res.json({ check: await checkBid(id) });
+});
+
+resumeCheckRouter.post('/bids/:id/accept', validate({ params: IdParamsSchema }), async (req, res) => {
+  const actor = currentActor(req);
+  const { id } = (req as ValidatedRequest<unknown, IdParams>).valid.params;
+  await assertBidAccess(actor, id);
+  res.json({ check: await acceptBid(id) });
 });
 
 resumeCheckRouter.post('/remake', validate({ body: RemakeSchema }), async (req, res) => {

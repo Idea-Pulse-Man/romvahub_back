@@ -206,6 +206,7 @@ const checkSelect = {
   number: true,
   company: true,
   profileId: true,
+  resumeCheckAcceptedHash: true,
   resumeDocument: true,
   coverLetterDocument: true,
   resumeFiles: { select: { format: true } },
@@ -286,9 +287,13 @@ export async function checkBid(bidId: string): Promise<ResumeCheck | null> {
         companies: source.workExperience.map((w) => w.company),
       }
     : null;
-  const reasons = text.trim()
+  let reasons = text.trim()
     ? resumeProblems(text, { company: bid.company, person, files, letter: bid.coverLetterDocument, duplicateOf: twin })
     : ['the Word file could not be read'];
+  // Looked at and passed by a person ("Looks fine"): this same Resume and letter stay passed.
+  if (reasons.length && bid.resumeCheckAcceptedHash && bid.resumeCheckAcceptedHash === acceptedKey(hash, bid.coverLetterDocument)) {
+    reasons = [];
+  }
   const checkedAt = new Date();
   const status = reasons.length ? 'flagged' : 'ok';
   await prisma.bid.update({
@@ -305,6 +310,26 @@ export async function checkBidQuietly(bidId: string): Promise<void> {
   } catch (error) {
     logger.warn({ err: error, bidId }, 'Resume check failed');
   }
+}
+
+/** What "Looks fine" pins: the Resume's text hash and the letter, so a remake or a new letter is checked again. */
+function acceptedKey(textHash: string | null, letter: unknown): string {
+  return createHash('sha256').update(`${textHash ?? ''}|${JSON.stringify(letter ?? null)}`).digest('hex');
+}
+
+/**
+ * "Looks fine": a person looked at this Resume and letter and passes them.
+ * Null when there is no Resume to pass.
+ */
+export async function acceptBid(bidId: string): Promise<ResumeCheck | null> {
+  const first = await checkBid(bidId);
+  if (!first) return null;
+  const row = await prisma.bid.findUnique({ where: { id: bidId }, select: { resumeTextHash: true, coverLetterDocument: true } });
+  await prisma.bid.update({
+    where: { id: bidId },
+    data: { resumeCheckAcceptedHash: acceptedKey(row?.resumeTextHash ?? null, row?.coverLetterDocument) },
+  });
+  return checkBid(bidId);
 }
 
 export async function clearCheck(bidId: string): Promise<void> {

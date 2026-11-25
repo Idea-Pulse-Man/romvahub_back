@@ -5,13 +5,13 @@ import { BadGatewayError, BadRequestError } from '../http/errors.js';
 import { toMarkdown } from '../jobs/markdown.js';
 import * as profileService from '../profile/profile.service.js';
 import { convertDocxToPdf, processMakerJson, renderStructuredWithMaker } from '../resume/maker/maker.service.js';
-import { ResumePayloadSchema } from '../resume/resume.schemas.js';
+import { AiResumeSchema } from '../resume/resume.schemas.js';
 import { CoverLetterPayloadSchema, type CoverLetterPayload } from '../cover-letter/cover-letter.schemas.js';
 import { renderCoverLetter } from '../cover-letter/cover-letter.service.js';
 import { settingsForMake } from '../profiles/profile-prompts.service.js';
 import mammoth from 'mammoth';
 import { parseJsonAnswer } from './json-answer.js';
-import { resumeAnswerProblems, resumeRetryMessage, templateLayout, type TemplateLayout } from './resume-answer-check.js';
+import { resumeAnswerProblems, resumeRetryMessage } from './resume-answer-check.js';
 import { checkBidQuietly } from '../resume/resume-check.js';
 
 /**
@@ -52,175 +52,6 @@ export interface MakeJob {
   folderName: string;
   /** The first chat's message: the Profile's Resume prompt and the posting. */
   resumeMessage: string;
-  /**
-   * For a Resume prompt with `{{CANDIDATE}}`: the Profile's own jobs the
-   * Resume is written from, one per job in the template. The AI writes the
-   * summary, skills and bullet points; the job titles, employers and places
-   * are these, never the AI's.
-   */
-  history?: HistoryJob[];
-}
-
-export interface HistoryJob {
-  title: string;
-  company: string;
-  location: string;
-  /** `01/2024 - Present` */
-  dates: string;
-}
-
-/** In a Profile's Resume prompt: where the Profile's own work history goes. */
-const CANDIDATE_MARK = /\{\{\s*CANDIDATE\s*\}\}/i;
-/** Asked for when the template has no numbered slots to count. */
-const DEFAULT_BULLETS = 4;
-const DEFAULT_SKILL_GROUPS = 6;
-const REPLY_JSON = 'Reply with the JSON only, in a single ```json code block.';
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-
-/** `2024-01` → `01/2024`; null (still there) → `Present`. */
-function monthYear(value: string | null): string {
-  if (value === null) return 'Present';
-  const match = /^(\d{4})-(\d{2})/.exec(value);
-  return match ? `${match[2]}/${match[1]}` : value.trim();
-}
-
-/** `2024-01` → months since year 0, or null. */
-function monthIndex(value: string): number | null {
-  const match = /^(\d{4})-(\d{2})/.exec(value);
-  return match ? Number(match[1]) * 12 + Number(match[2]) - 1 : null;
-}
-
-/** Whole years from the first job's start to the last one's end (today for a current job). */
-function yearsOfExperience(jobs: MakeJob['profile']['workExperience'], now = new Date()): number {
-  const today = now.getFullYear() * 12 + now.getMonth();
-  const known = (month: number | null): month is number => month !== null;
-  const starts = jobs.map((job) => monthIndex(job.startDate)).filter(known);
-  const ends = jobs.map((job) => (job.endDate ? monthIndex(job.endDate) : today)).filter(known);
-  if (!starts.length || !ends.length) return 0;
-  return Math.floor((Math.max(...ends) - Math.min(...starts)) / 12);
-}
-
-/** The Profile's jobs for the template's job slots, in the Profile's order — each with its company and title. */
-function historyFor(profile: MakeJob['profile'], layout: TemplateLayout, who: string): HistoryJob[] {
-  const jobs = profile.workExperience.filter((job) => job.company.trim() || job.title.trim());
-  if (!jobs.length) {
-    throw new BadRequestError(
-      `${who} has no work experience in the Profile, which the Resume prompt's {{CANDIDATE}} needs. ` +
-        'Add the jobs (company, title, dates) in Profiles → Edit, then click Make again.',
-    );
-  }
-  const used = layout.bullets.length ? jobs.slice(0, layout.bullets.length) : jobs;
-  used.forEach((job, index) => {
-    const missing = !job.company.trim() ? 'company' : !job.title.trim() ? 'job title' : '';
-    if (missing) {
-      throw new BadRequestError(`${who}'s work experience ${index + 1} has no ${missing}. Add it in Profiles → Edit, then click Make again.`);
-    }
-  });
-  return used.map((job) => ({
-    title: job.title.trim(),
-    company: job.company.trim(),
-    location: job.location.trim(),
-    dates: [monthYear(job.startDate), monthYear(job.endDate)].filter(Boolean).join(' - '),
-  }));
-}
-
-/** What `{{CANDIDATE}}` stands for: the jobs, years of experience and education, as the Profile has them. */
-function candidateText(history: HistoryJob[], profile: MakeJob['profile']): string {
-  const years = yearsOfExperience(profile.workExperience);
-  const education = profile.education
-    .slice(0, 2)
-    .map((entry) => [entry.degree, entry.major, entry.university, entry.endDate?.slice(0, 4)].filter(Boolean).join(', '))
-    .filter(Boolean)
-    .join('; ');
-  return [
-    'MY WORK HISTORY (use exactly as written; add no other jobs, titles, degrees or certifications):',
-    ...history.map((job, index) => `${index + 1}. ${[job.title, job.company, job.location, job.dates].filter(Boolean).join(' | ')}`),
-    ...(years > 0 ? [`Experience: ${years} years`] : []),
-    ...(education ? [`Education: ${education}`] : []),
-  ].join('\n');
-}
-
-/** "7, 6 and 5" */
-function spokenList(values: number[]): string {
-  return values.length > 1 ? `${values.slice(0, -1).join(', ')} and ${values[values.length - 1]}` : String(values[0] ?? '');
-}
-
-/** The answer's shape, sized to the template: what `withHistory` reads back. */
-function outputText(history: HistoryJob[], layout: TemplateLayout): string {
-  const shape = {
-    ...(layout.headline ? { headline: '<role applied for> | <1-2 core strengths>' } : {}),
-    summary: '<summary>',
-    skills: ['<Group>: <skill>, <skill>, <skill>, <skill>'],
-    bullets: history.map((_, index) => [`<job ${index + 1} bullet>`]),
-  };
-  const bullets = history.map((_, index) => layout.bullets[index] || DEFAULT_BULLETS);
-  return [
-    'OUTPUT: one JSON object with exactly these keys:',
-    JSON.stringify(shape),
-    `- skills: ${layout.skillGroups || DEFAULT_SKILL_GROUPS} groups`,
-    `- bullets: one list per job, in the order above: ${spokenList(bullets)} bullets`,
-  ].join('\n');
-}
-
-/** Whether a Resume prompt is written around the Profile's own work history (`{{CANDIDATE}}`). */
-export function usesProfileHistory(prompt: string): boolean {
-  return CANDIDATE_MARK.test(prompt);
-}
-
-/**
- * The first chat for a `{{CANDIDATE}}` prompt: the prompt with the Profile's
- * history in it, the posting as plain text, then the answer's shape sized to
- * the template. Throws (400) when the Profile has no work history to use.
- */
-export function historyRequest(input: {
-  prompt: string;
-  profile: MakeJob['profile'];
-  bid: Pick<Bid, 'company' | 'role'>;
-  jobDescription: string;
-  layout: TemplateLayout;
-  /** The Profile's name, for the error messages. */
-  who: string;
-}): { history: HistoryJob[]; message: string } {
-  const history = historyFor(input.profile, input.layout, input.who);
-  const candidate = candidateText(history, input.profile);
-  const message = [
-    input.prompt.replace(new RegExp(CANDIDATE_MARK.source, 'gi'), () => candidate).trim(),
-    '',
-    'JOB',
-    `Company: ${input.bid.company}`,
-    `Role: ${input.bid.role}`,
-    input.jobDescription,
-    '',
-    outputText(history, input.layout),
-    '',
-    REPLY_JSON,
-  ].join('\n');
-  return { history, message };
-}
-
-/**
- * An answer to a `{{CANDIDATE}}` request as the template is filled from it:
- * the AI's summary, skills and bullet points, with the Profile's own job
- * titles, employers and places, whatever the answer says about them.
- */
-export function withHistory(job: Pick<MakeJob, 'history' | 'bid'>, json: unknown): unknown {
-  if (!job.history || !isRecord(json)) return json;
-  const skills = isRecord(json.skills)
-    ? // {"Group": "a, b"} for ["Group: a, b"]: the same thing.
-      Object.entries(json.skills).map(([group, value]) => `${group}: ${Array.isArray(value) ? value.join(', ') : String(value ?? '')}`)
-    : json.skills;
-  return {
-    ...json,
-    skills,
-    headline: typeof json.headline === 'string' ? json.headline : undefined,
-    company: job.bid.company,
-    role: job.bid.role,
-    roleTitles: job.history.map((entry) => entry.title),
-    companies: job.history.map((entry) => entry.company),
-    locations: job.history.map((entry) => entry.location),
-  };
 }
 
 const UNSAFE = /[\\/:*?"<>|#%]+/g;
@@ -273,34 +104,21 @@ export async function prepareMake(actor: Actor, bidId: string): Promise<MakeJob>
   const firstName = profile.firstName || bid.candidate?.firstName || '';
   const lastName = profile.lastName || bid.candidate?.lastName || '';
 
-  let history: HistoryJob[] | undefined;
-  let resumeMessage: string;
-  if (usesProfileHistory(prompts.resumePrompt)) {
-    ({ history, message: resumeMessage } = historyRequest({
-      prompt: prompts.resumePrompt,
-      profile,
-      bid,
-      jobDescription,
-      layout: await templateLayout(prompts.templateId),
-      who: [firstName, lastName].filter(Boolean).join(' ') || 'This Profile',
-    }));
-  } else {
-    const input = JSON.stringify(
-      { target_company: bid.company, target_role: bid.role, job_description: jobDescription },
-      null,
-      2,
-    );
-    resumeMessage = [
-      prompts.resumePrompt,
-      '',
-      '================================================================================',
-      'INPUT',
-      '================================================================================',
-      input,
-      '',
-      REPLY_JSON,
-    ].join('\n');
-  }
+  const input = JSON.stringify(
+    { target_company: bid.company, target_role: bid.role, job_description: jobDescription },
+    null,
+    2,
+  );
+  const resumeMessage = [
+    prompts.resumePrompt,
+    '',
+    '================================================================================',
+    'INPUT',
+    '================================================================================',
+    input,
+    '',
+    'Reply with the JSON only, in a single ```json code block.',
+  ].join('\n');
 
   return {
     bid,
@@ -313,7 +131,6 @@ export async function prepareMake(actor: Actor, bidId: string): Promise<MakeJob>
     profileFolderName: fileStem(firstName, lastName) || 'Profile',
     folderName: applicationFolderName(bid.company, bid.role),
     resumeMessage,
-    ...(history ? { history } : {}),
   };
 }
 
@@ -360,13 +177,13 @@ export async function checkResumeAnswer(job: MakeJob, answer: string): Promise<R
     const problems = [error instanceof Error ? error.message : 'the answer was not valid JSON'];
     return { problems, retryMessage: resumeRetryMessage(job.resumeMessage, problems, null) };
   }
-  const problems = await problemsIn(job, withHistory(job, json) as object);
+  const problems = await problemsIn(job, json as object);
   return problems.length ? { problems, retryMessage: resumeRetryMessage(job.resumeMessage, problems, json) } : { problems };
 }
 
 /** ChatGPT's first answer → the Resume in the Profile's Word template, as Word and PDF, stored on the application. */
 export async function finishResume(job: MakeJob, answer: string): Promise<FinishedResume> {
-  const json = withHistory(job, parseJsonAnswer(answer));
+  const json = parseJsonAnswer(answer);
 
   // A Resume with an empty summary, no skills or a job without a title is
   // never stored: refused like an unreadable answer (and tried again later).
@@ -379,7 +196,7 @@ export async function finishResume(job: MakeJob, answer: string): Promise<Finish
   // prompt (P.txt) in Maker JSON. Both go into the same Word template.
   const templateId = job.prompts.templateId;
   const name = profileName(job);
-  const structured = ResumePayloadSchema.safeParse(json);
+  const structured = AiResumeSchema.safeParse(json);
   let docx: Buffer;
   try {
     docx = structured.success
@@ -436,7 +253,6 @@ const COVER_LETTER_SHAPE = `Reply with JSON only, in a single json code block, e
 
 /** The second chat: the Profile's cover letter prompt, the posting and the Resume just made. */
 export function coverLetterMessage(job: MakeJob, resume: unknown): string {
-  if (job.history) return letterMessage(job, 'MY RESUME:', historyResumeText(job.history, resume));
   // The Resume as ChatGPT wrote it, minus the posting it already echoes and
   // the template's highlight markup.
   const copy = { ...(resume as Record<string, unknown>) };
@@ -458,24 +274,6 @@ export async function coverLetterMessageFromStoredResume(job: MakeJob): Promise<
   const resumeText = value.replace(/\n{3,}/g, '\n\n').trim();
   if (!resumeText) throw new BadRequestError('The stored Resume has no text to write the cover letter from.');
   return letterMessage(job, 'MY RESUME:', resumeText);
-}
-
-/** A Resume written from the Profile's history, as plain text: what the letter is written from, in fewer words than its JSON. */
-function historyResumeText(history: HistoryJob[], resume: unknown): string {
-  const document = isRecord(resume) ? resume : {};
-  const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
-  const lines = (value: unknown) => (Array.isArray(value) ? value.map(text).filter(Boolean) : []);
-  const bullets = Array.isArray(document.bullets) ? document.bullets : [];
-  return [
-    text(document.headline),
-    text(document.summary),
-    lines(document.skills).join('\n'),
-    ...history.map((job, index) =>
-      [[job.title, job.company, job.dates].filter(Boolean).join(', '), ...lines(bullets[index]).map((bullet) => `- ${bullet}`)].join('\n'),
-    ),
-  ]
-    .filter(Boolean)
-    .join('\n\n');
 }
 
 function letterMessage(job: MakeJob, resumeHeading: string, resumeText: string): string {

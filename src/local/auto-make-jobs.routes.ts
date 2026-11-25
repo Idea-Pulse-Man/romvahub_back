@@ -54,11 +54,6 @@ import {
  * stored but whose cover letter failed; such a job comes with `letterOnly:
  * true` and its `coverLetterMessage`, and goes straight to the cover-letter step.
  *
- * `fromProfile: true` on a Resume job: its Profile's prompt has `{{CANDIDATE}}`,
- * so the message already holds the Profile's own work history, its rules and
- * the answer's shape. Nothing needs looking up on the web, and the worker
- * adds no text of its own.
- *
  * Signed in as the person whose applications they make: an admin's worker
  * takes any application, anyone else's only those they can see.
  */
@@ -120,9 +115,7 @@ async function claimPrepared(actor: Actor, worker: string, kind: ClaimKind, requ
         folderName: job.folderName,
         letterOnly,
         ...(claimed.remake ? { remake: true } : {}),
-        ...(letterOnly
-          ? { coverLetterMessage }
-          : { resumeMessage: job.resumeMessage, ...(job.history ? { fromProfile: true } : {}) }),
+        ...(letterOnly ? { coverLetterMessage } : { resumeMessage: job.resumeMessage }),
       };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);

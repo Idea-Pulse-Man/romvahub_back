@@ -201,8 +201,6 @@ export async function renderStructuredWithMaker(input: {
     skills: input.document.skills,
     bullets: input.document.bullets,
     companies: input.document.companies?.length ? input.document.companies : input.fallbackCompanies,
-    locations: input.document.locations,
-    headline: input.document.headline,
     name: input.name,
     jobDescription: input.jobDescription,
   };

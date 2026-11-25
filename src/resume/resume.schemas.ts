@@ -90,14 +90,6 @@ export const ResumePayloadSchema = AiResumeSchema.extend({
       'Employer per role, newest first, aligned with `roleTitles` (Resume Maker `Company-N`). ' +
         "When absent, the profile's work history fills the template's company slots.",
     ),
-  locations: z
-    .array(z.string())
-    .optional()
-    .describe('Place per role, newest first, aligned with `roleTitles` (the template\'s `Location-N`).'),
-  headline: z
-    .string()
-    .optional()
-    .describe("The line under the name (`Professional-Title`, `resume-title`); the role applied for when absent."),
 });
 
 export type ResumePayload = z.infer<typeof ResumePayloadSchema>;

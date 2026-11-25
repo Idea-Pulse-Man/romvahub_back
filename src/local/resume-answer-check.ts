@@ -4,7 +4,7 @@ import { getSkillEntries } from '../resume/maker/merge-docx.js';
 import { buildPlaceholders, getPlaceholder } from '../resume/maker/placeholders.js';
 import { structuredToFlat } from '../resume/maker/structured-to-flat.js';
 import { readTemplateBytes } from '../resume/maker/templates.js';
-import { AiResumeSchema } from '../resume/resume.schemas.js';
+import { ResumePayloadSchema } from '../resume/resume.schemas.js';
 
 /**
  * The look at ChatGPT's Resume JSON before a Resume is built from it.
@@ -63,7 +63,7 @@ export async function tagsInTemplate(bytes: Buffer): Promise<string[]> {
 
 /** The answer as the merge sees it: the same placeholder map `finishResume` would fill the template from. */
 function placeholdersFor(json: object, context: { name?: string; fallbackCompanies: string[] }) {
-  const structured = AiResumeSchema.safeParse(json);
+  const structured = ResumePayloadSchema.safeParse(json);
   if (!structured.success) return buildPlaceholders(json);
   const document = structured.data;
   return buildPlaceholders(
@@ -74,11 +74,45 @@ function placeholdersFor(json: object, context: { name?: string; fallbackCompani
       summary: document.summary,
       skills: document.skills,
       bullets: document.bullets,
-      // This shape carries no employers: the build takes the Profile's work history.
-      companies: context.fallbackCompanies,
+      // With no employers of its own, the build takes the Profile's work history.
+      companies: document.companies?.length ? document.companies : context.fallbackCompanies,
+      locations: document.locations,
+      headline: document.headline,
       name: context.name,
     }),
   );
+}
+
+/** What a template has room for: the Resume request asks for exactly this much. */
+export interface TemplateLayout {
+  /** Bullet-point slots per job slot, job 1 first. */
+  bullets: number[];
+  /** Numbered skill-group slots (`<Skill-Group-N>` / `<Skill-Groups-N>`); 0 when it has none. */
+  skillGroups: number;
+  /** Whether it has a line under the name (`<Professional-Title>`, `<resume-title>`…). */
+  headline: boolean;
+}
+
+const HEADLINE = /^(professional[-_ ]?title|resume[-_]title|title|headline)$/i;
+
+export function layoutOf(tags: string[]): TemplateLayout {
+  const roles = new Map<number, number>();
+  for (const tag of tags) {
+    const titleOf = ROLE_TITLE.exec(tag)?.[1];
+    if (titleOf && !roles.has(Number(titleOf))) roles.set(Number(titleOf), 0);
+    const bulletOf = ROLE_BULLET.exec(tag)?.[1];
+    if (bulletOf) roles.set(Number(bulletOf), (roles.get(Number(bulletOf)) ?? 0) + 1);
+  }
+  const groups = new Set(tags.map((tag) => /^Skill-Groups?-(\d+)$/i.exec(tag)?.[1]).filter(Boolean));
+  return {
+    bullets: [...roles.keys()].sort((a, b) => a - b).map((role) => roles.get(role)!),
+    skillGroups: groups.size,
+    headline: tags.some((tag) => HEADLINE.test(tag)),
+  };
+}
+
+export async function templateLayout(templateId: string | undefined): Promise<TemplateLayout> {
+  return layoutOf(await templateTags(templateId));
 }
 
 /**

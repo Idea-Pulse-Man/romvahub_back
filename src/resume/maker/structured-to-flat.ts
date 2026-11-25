@@ -11,6 +11,10 @@ export type StructuredResumeInput = {
   bullets: string[][];
   /** Employer per role, aligned with `roleTitles` — the template's `<Company-N>`. */
   companies?: string[];
+  /** Place per role, aligned with `roleTitles` — the template's `<Location-N>`. */
+  locations?: string[];
+  /** The line under the name (`<Professional-Title>`, `<resume-title>`); `role` when absent. */
+  headline?: string;
   /** Optional display name from the candidate profile. */
   name?: string;
   /** Optional job posting text for meta / export naming. */
@@ -43,18 +47,21 @@ function parseSkillLine(line: string): { category: string; value: string } | nul
 /**
  * Flatten structured RemoteOps resume payload into Maker mail-merge JSON.
  *
- * Produces `Role-title-N`, `Role-Bullet-N-M`, `Summary`, `resume-title`,
- * `technicalskills` (object) and `core-skills` (multiline), plus
- * `name` / `target_company` / `target_role` when available.
+ * Produces `Role-title-N`, `Company-N`, `Location-N`, `Role-Bullet-N-M`,
+ * `Summary`, `resume-title` / `Professional-Title`, `technicalskills`
+ * (object) and `core-skills` (multiline), plus `name` / `target_company` /
+ * `target_role` when available.
  */
 export function structuredToFlat(input: StructuredResumeInput): MakerFlatJson {
+  const title = input.headline?.trim() || input.role || '';
   const flat: MakerFlatJson = {
     Summary: input.summary ?? '',
     summary: input.summary ?? '',
-    'resume-title': input.role ?? '',
-    resume_title: input.role ?? '',
-    title: input.role ?? '',
-    Title: input.role ?? '',
+    'resume-title': title,
+    resume_title: title,
+    title,
+    Title: title,
+    'Professional-Title': title,
     target_company: input.company ?? '',
     target_role: input.role ?? '',
   };
@@ -79,6 +86,11 @@ export function structuredToFlat(input: StructuredResumeInput): MakerFlatJson {
   const companies = input.companies ?? [];
   for (let i = 0; i < companies.length; i += 1) {
     flat[`Company-${i + 1}`] = companies[i] ?? '';
+  }
+
+  const locations = input.locations ?? [];
+  for (let i = 0; i < locations.length; i += 1) {
+    flat[`Location-${i + 1}`] = locations[i] ?? '';
   }
 
   const bullets = input.bullets ?? [];

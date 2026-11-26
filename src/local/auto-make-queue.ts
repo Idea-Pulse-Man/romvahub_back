@@ -38,10 +38,21 @@ const NOW_UTC = PrismaTypes.sql`(now() at time zone 'utc')`;
  */
 export type ClaimKind = 'resume' | 'letter' | 'any';
 
-/** Down: highest number first, among those filed at `from` or before (all, when null). */
+/**
+ * Down: highest number first, among those filed at `from` or before (all, when null).
+ * `startFrom`: a computer's start No. (the Start window) — from it up, or from it down.
+ */
 export interface ClaimOrder {
   down: boolean;
   from: Date | null;
+  startFrom?: number | null;
+}
+
+/** A computer's own choices from its Start window (`maker_computers`). */
+export interface ComputerChoice {
+  profileId: string | null;
+  down: boolean;
+  startFrom: number | null;
 }
 
 async function currentOrder(): Promise<ClaimOrder> {
@@ -104,6 +115,9 @@ async function waiting(
         },
         kind === 'resume' ? NEEDS_RESUME : kind === 'letter' ? NEEDS_LETTER : { OR: [NEEDS_RESUME, NEEDS_LETTER] },
         ...(!requested && order.down && order.from ? [{ createdAt: { lte: order.from } }] : []),
+        ...(!requested && order.startFrom != null
+          ? [{ number: order.down ? { lte: order.startFrom } : { gte: order.startFrom } }]
+          : []),
       ],
     },
     orderBy: requested
@@ -144,10 +158,24 @@ export type ClaimedApplication = Awaited<ReturnType<typeof waiting>>[number];
 export async function claimNext(
   scope: PrismaTypes.BidWhereInput,
   worker: string,
-  { kind = 'resume', requestedOnly = false }: { kind?: ClaimKind; requestedOnly?: boolean } = {},
+  {
+    kind = 'resume',
+    requestedOnly = false,
+    computer = null,
+  }: { kind?: ClaimKind; requestedOnly?: boolean; computer?: ComputerChoice | null } = {},
 ): Promise<ClaimedApplication | null> {
+  // A computer started for one Profile takes only that Profile's applications.
+  if (computer?.profileId) scope = { AND: [scope, { profileId: computer.profileId }] };
   const candidates = await waiting(scope, 5, kind, { requested: true });
-  if (!requestedOnly) {
+  if (!requestedOnly && computer) {
+    // Its own order: from its start No. up (or down); past the end, on with whatever is left.
+    const order: ClaimOrder = { down: computer.down, from: null, startFrom: computer.startFrom };
+    let next = await waiting(scope, 5, kind, { order });
+    if (next.length === 0 && computer.startFrom != null) {
+      next = await waiting(scope, 5, kind, { order: { down: computer.down, from: null } });
+    }
+    candidates.push(...next);
+  } else if (!requestedOnly) {
     const order = await currentOrder();
     let next = await waiting(scope, 5, kind, { order });
     if (order.down && order.from && next.length === 0) {

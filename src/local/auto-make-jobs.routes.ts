@@ -5,6 +5,7 @@ import { requireAuth } from '../auth/require-auth.js';
 import { assertBidAccess, bidAccessScope } from '../bids/bids.service.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../http/errors.js';
 import { prisma } from '../prisma.js';
+import { computerFor } from './maker-computers.js';
 import { validate, type ValidatedRequest } from '../http/validate.js';
 import { logger } from '../logger.js';
 import { autoMakeEnabled, reportWorker } from './auto-make-state.js';
@@ -18,6 +19,7 @@ import {
   releaseHeldBy,
   requestMake,
   touchClaim,
+  type ComputerChoice,
 } from './auto-make-queue.js';
 import {
   checkResumeAnswer,
@@ -97,9 +99,15 @@ function isAnswerProblem(error: unknown): boolean {
  * one that cannot even be prepared (its Profile has no Resume prompt yet, its
  * stored Resume has no text…) is counted as failed and the next one is offered.
  */
-async function claimPrepared(actor: Actor, worker: string, kind: ClaimKind, requestedOnly = false) {
+async function claimPrepared(
+  actor: Actor,
+  worker: string,
+  kind: ClaimKind,
+  requestedOnly = false,
+  computer: ComputerChoice | null = null,
+) {
   for (let tries = 0; tries < 3; tries += 1) {
-    const claimed = await claimNext(bidAccessScope(actor), worker, { kind, requestedOnly });
+    const claimed = await claimNext(bidAccessScope(actor), worker, { kind, requestedOnly, computer });
     if (!claimed) return null;
     const { letterOnly } = claimed;
     try {
@@ -131,10 +139,14 @@ autoMakeJobsRouter.post('/claim', validate({ body: ClaimSchema }), async (req, r
   const { worker, letterOnlyJobs } = (req as ValidatedRequest<ClaimBody>).valid.body;
 
   const kind: ClaimKind = letterOnlyJobs ? 'any' : 'resume';
-  if (!(await autoMakeEnabled())) {
+  // Started with the Start window: this computer's own Start / Stop, Profile, order and start No.
+  // Otherwise the one switch (Start resume on the website) and ▲ / ▼.
+  const computer = await computerFor(worker);
+  const enabled = computer ? computer.running : await autoMakeEnabled();
+  if (!enabled) {
     // At Stop only what someone asked for by clicking Make is made — handed
     // out as `enabled: true`, so a worker that waits at Stop makes it anyway.
-    const requested = await claimPrepared(actor, worker, kind, true);
+    const requested = await claimPrepared(actor, worker, kind, true, computer);
     if (requested) {
       res.json({ enabled: true, job: requested });
       return;
@@ -148,7 +160,7 @@ autoMakeJobsRouter.post('/claim', validate({ body: ClaimSchema }), async (req, r
   // missing — its Resume (and letter), or, for a worker that can do it, just
   // its cover letter. (One that keeps failing waits out its back-off, so it
   // never blocks the list.)
-  const job = await claimPrepared(actor, worker, kind);
+  const job = await claimPrepared(actor, worker, kind, false, computer);
   if (!job) await reportWorker({});
   res.json({ enabled: true, job });
 });
@@ -244,6 +256,8 @@ autoMakeJobsRouter.post('/heartbeat', validate({ body: HeartbeatSchema }), async
   const actor = currentActor(req);
   const { worker, bidId, waitingReason } = (req as ValidatedRequest<HeartbeatBody>).valid.body;
   await reportWorker(waitingReason !== undefined ? { waitingReason } : {});
+  // A computer started with the Start window shows online while it works on a long one too.
+  if (worker) await prisma.makerComputer.updateMany({ where: { worker }, data: { seenAt: new Date() } });
   if (bidId) {
     await assertBidAccess(actor, bidId);
     if (!(await touchClaim(bidId, worker))) {

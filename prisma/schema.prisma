@@ -822,6 +822,32 @@ model ContentBackup {
   @@map("content_backups")
 }
 
+/// One computer's Resume maker, started there with Start resume (the Start
+/// window): which Profile it makes Resumes for, in which order, from which
+/// No., and with which AIs. Keyed by the name the computer claims with
+/// ("agent · DESKTOP-1"), so one user can run it on several computers at once
+/// — the queue never gives two of them the same application.
+model MakerComputer {
+  worker    String    @id
+  /// Who started it there.
+  userId    String    @db.Uuid
+  running   Boolean   @default(false)
+  /// The one Profile it makes Resumes for (null: every Profile the user has).
+  profileId String?   @db.Uuid
+  /// "up": from the start No. (else the lowest) up; "down": from it (else the highest) down.
+  order     String    @default("up")
+  /// The No. to start from, in that Profile; past the end it carries on with what is left.
+  startFrom Int?
+  /// The AI choices: { method, ai, draftAi, letterAi, models }.
+  choices   Json?
+  startedAt DateTime?
+  /// Its last ask for work.
+  seenAt    DateTime?
+  updatedAt DateTime  @updatedAt
+
+  @@map("maker_computers")
+}
+
 /// The Resume check's own ignore list (one row, `id = 1`), set on the desktop
 /// app's Resume Maker page: a placeholder, word or reason that has one of these
 /// words or phrases is not flagged (a company name like "C1", a bracketed

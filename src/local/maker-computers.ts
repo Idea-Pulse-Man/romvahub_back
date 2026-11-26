@@ -73,13 +73,15 @@ makerComputersRouter.put(
     if (existing && existing.userId !== actor.id && !isAdmin(actor)) {
       throw new ForbiddenError('This computer\'s Resume maker was started by someone else.');
     }
+    // A Profile token's computer works on that Profile, whatever was sent.
+    const profileId = actor.profileId ?? body.profileId ?? null;
     const data = {
       userId: actor.id,
       running: body.running,
-      profileId: body.profileId ?? null,
+      profileId,
       order: body.order,
       // A start No. counts in one Profile's numbers only.
-      startFrom: body.profileId ? (body.startFrom ?? null) : null,
+      startFrom: profileId ? (body.startFrom ?? null) : null,
       ...(body.choices ? { choices: body.choices as PrismaTypes.InputJsonValue } : {}),
       ...(body.running && !existing?.running ? { startedAt: new Date() } : {}),
     };

@@ -4,6 +4,7 @@ import { logger } from './logger.js';
 import { prisma } from './prisma.js';
 import { startAutoMakeWatcher } from './local/auto-make-watcher.js';
 import { startDraftExpiry } from './bids/draft-expiry.js';
+import { startResumeFolderCleanup } from './resume/store/cleanup.js';
 
 const app = createApp();
 
@@ -17,6 +18,8 @@ const server = app.listen(env.PORT, () => {
   startAutoMakeWatcher();
   // Each morning (Eastern): Drafts posted more than 2 days ago become Expired.
   startDraftExpiry();
+  // Each night: the Resume folder's Word and PDF copies follow the status rules.
+  startResumeFolderCleanup();
 });
 
 /**

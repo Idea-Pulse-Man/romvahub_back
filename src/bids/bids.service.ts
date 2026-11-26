@@ -33,6 +33,9 @@ import {
   type ProofFingerprint,
 } from '../proof/fingerprint.js';
 import { bidInclude, candidatePhotoKey, toApiBid, type BidRow } from './bids.mapper.js';
+import { HAS_RESUME, NO_RESUME } from '../resume/store/resume-store.js';
+import { dropCopiesQuietly, dropKept } from '../resume/store/folder.js';
+import { filesFollowStatus } from '../resume/store/file-rules.js';
 import { bidScopeWhere, lockBidScope, nextBidNumber, type BidScope } from './bid-number.js';
 import { ChatTranscriptSchema, type ChatMessage } from '../questions/questions.schemas.js';
 import * as profilesService from '../admin/profiles.service.js';
@@ -233,11 +236,11 @@ async function listWhere(actor: Actor, query: ListBidsQuery): Promise<PrismaType
   if (query.status) clauses.push({ status: toDbStatus(query.status) });
   if (query.statuses?.length) clauses.push({ status: { in: query.statuses.map(toDbStatus) } });
 
-  // Has a Resume: a stored document or a synced file — the same test as `hasResume` on a bid.
+  // Has a Resume: JSON, a stored or kept file, or a generated document — the same test as `hasResume` on a bid.
   if (query.hasResume === true) {
-    clauses.push({ OR: [{ resumeDocument: { not: PrismaTypes.AnyNull } }, { resumeFiles: { some: {} } }] });
+    clauses.push(HAS_RESUME);
   } else if (query.hasResume === false) {
-    clauses.push({ resumeDocument: { equals: PrismaTypes.AnyNull }, resumeFiles: { none: {} } });
+    clauses.push(NO_RESUME);
   }
 
   if (query.needsRemake === true) clauses.push({ resumeCheckStatus: 'flagged' });
@@ -701,7 +704,7 @@ export async function updateBid(
       // the document away clears it unless synced files are still the Resume.
       data.resumeMadeAt = input.resumeDocument
         ? (existing.resumeMadeAt ?? new Date())
-        : existing.resumeFiles.length > 0
+        : existing.resumeFiles.length > 0 || existing.resumeAnswer !== null || existing.resumeKept
           ? existing.resumeMadeAt
           : null;
     }
@@ -712,6 +715,9 @@ export async function updateBid(
       include: bidInclude,
     });
   });
+
+  // The Resume folder's copies follow the new status (Skip… none; Draft built again).
+  if (input.status !== undefined && input.status !== current.status) filesFollowStatus([bidId], toDbStatus(nextStatus));
 
   return mapBid(row);
 }
@@ -902,6 +908,9 @@ export async function deleteResume(actor: Actor, bidId: string): Promise<Bid> {
       where: { id: existing.id },
       data: {
         resumeDocument: PrismaTypes.DbNull,
+        resumeAnswer: PrismaTypes.DbNull,
+        resumeBuild: PrismaTypes.DbNull,
+        resumeKept: false,
         resumeMadeAt: null,
         updatedAt: new Date(),
         // Its check went with it.
@@ -913,6 +922,9 @@ export async function deleteResume(actor: Actor, bidId: string): Promise<Bid> {
     }),
     forgetAutoMakeFailures(existing.id),
   ]);
+  // Its files in the Resume folder go with it.
+  await dropCopiesQuietly([existing.id], 'resume');
+  if (existing.resumeKept) await dropKept(existing.id).catch((error) => logger.warn({ err: error, bidId }, 'Could not delete a kept Resume'));
   return getBid(actor, existing.id);
 }
 
@@ -929,6 +941,7 @@ export async function deleteCoverLetter(actor: Actor, bidId: string): Promise<Bi
     }),
     forgetAutoMakeFailures(existing.id),
   ]);
+  await dropCopiesQuietly([existing.id], 'cover-letter');
   return getBid(actor, existing.id);
 }
 
@@ -1112,6 +1125,9 @@ export async function deleteBid(actor: Actor, bidId: string): Promise<void> {
   if (count === 0) throw new NotFoundError('Bid not found.');
 
   await deletePhoto(existing?.proofKey);
+  // Its files in the Resume folder (and a kept old Resume) go too.
+  await dropCopiesQuietly([bidId]);
+  await dropKept(bidId).catch((error) => logger.warn({ err: error, bidId }, 'Could not delete a kept Resume'));
 }
 
 /**
@@ -1156,6 +1172,9 @@ export async function bulkUpdateStatus(
     }
   });
 
+  // The Resume folder's copies follow the new status.
+  filesFollowStatus(ownedIds, stage);
+
   return { updated: ownedIds.length };
 }
 
@@ -1164,11 +1183,14 @@ export async function bulkDeleteBids(
   input: BulkDeleteInput,
 ): Promise<{ deleted: number }> {
   const where = { id: { in: input.ids }, ...bidAccessScope(actor) };
-  const doomed = await prisma.bid.findMany({ where, select: { proofKey: true } });
+  const doomed = await prisma.bid.findMany({ where, select: { id: true, proofKey: true } });
   const { count } = await prisma.bid.deleteMany({ where });
 
   // Their screenshots too, after the rows: each delete swallows its own failure.
   await Promise.all(doomed.map((row) => deletePhoto(row.proofKey)));
+  // And their files in the Resume folder.
+  await dropCopiesQuietly(doomed.map((row) => row.id));
+  await Promise.all(doomed.map((row) => dropKept(row.id).catch(() => undefined)));
 
   return { deleted: count };
 }

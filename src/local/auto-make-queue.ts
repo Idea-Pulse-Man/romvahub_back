@@ -1,5 +1,6 @@
 import { Prisma as PrismaTypes } from '../generated/prisma/client.js';
 import { prisma } from '../prisma.js';
+import { HAS_MADE_RESUME, NO_RESUME } from '../resume/store/resume-store.js';
 
 /**
  * The automatic Resume maker's queue, shared by every worker on every
@@ -50,13 +51,10 @@ async function currentOrder(): Promise<ClaimOrder> {
 
 /** No Resume yet — or "Remake" asked for one again (the old one stays until the new one is saved). */
 const NEEDS_RESUME: PrismaTypes.BidWhereInput = {
-  OR: [
-    { resumeDocument: { equals: PrismaTypes.AnyNull }, resumeFiles: { none: {} } },
-    { autoMakeClaim: { remake: true } },
-  ],
+  OR: [NO_RESUME, { autoMakeClaim: { remake: true } }],
 };
 const NEEDS_LETTER: PrismaTypes.BidWhereInput = {
-  resumeFiles: { some: {} },
+  AND: [HAS_MADE_RESUME],
   coverLetterDocument: { equals: PrismaTypes.AnyNull },
   // A remake makes the Resume first, then its letter.
   NOT: [{ autoMakeClaim: { remake: true } }],
@@ -121,13 +119,15 @@ async function waiting(
       userId: true,
       user: { select: { role: true } },
       resumeFiles: { select: { id: true }, take: 1 },
+      resumeAnswer: true,
+      resumeKept: true,
       autoMakeClaim: { select: { remake: true } },
     },
   });
-  return rows.map(({ resumeFiles, autoMakeClaim, ...row }) => ({
+  return rows.map(({ resumeFiles, resumeAnswer, resumeKept, autoMakeClaim, ...row }) => ({
     ...row,
     remake: Boolean(autoMakeClaim?.remake),
-    letterOnly: resumeFiles.length > 0 && !autoMakeClaim?.remake,
+    letterOnly: (resumeAnswer !== null || resumeFiles.length > 0 || resumeKept) && !autoMakeClaim?.remake,
   }));
 }
 

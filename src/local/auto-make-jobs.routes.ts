@@ -267,6 +267,8 @@ autoMakeJobsRouter.post('/jobs/:bidId/request', validate({ params: BidParamsSche
       status: true,
       jobDescription: true,
       resumeDocument: true,
+      resumeAnswer: true,
+      resumeKept: true,
       coverLetterDocument: true,
       _count: { select: { resumeFiles: true } },
     },
@@ -278,7 +280,7 @@ autoMakeJobsRouter.post('/jobs/:bidId/request', validate({ params: BidParamsSche
   if (!bid.jobDescription?.trim()) {
     throw new BadRequestError('This application has no job description. Add one, then click Make again.');
   }
-  const hasResume = bid._count.resumeFiles > 0 || bid.resumeDocument !== null;
+  const hasResume = bid.resumeAnswer !== null || bid._count.resumeFiles > 0 || bid.resumeKept || bid.resumeDocument !== null;
   if (hasResume && bid.coverLetterDocument !== null) {
     throw new BadRequestError('This application already has its Resume and cover letter.');
   }

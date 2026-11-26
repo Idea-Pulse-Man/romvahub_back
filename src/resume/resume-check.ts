@@ -5,6 +5,8 @@ import { Prisma as PrismaTypes } from '../generated/prisma/client.js';
 import { companyKey } from '../domain/company.js';
 import { logger } from '../logger.js';
 import { prisma } from '../prisma.js';
+import { NotFoundError } from '../http/errors.js';
+import { HAS_RESUME, resumeFile, resumeFormats } from './store/resume-store.js';
 
 /**
  * The Resume check: reads an application's stored Resume (the Word file's
@@ -267,6 +269,8 @@ const checkSelect = {
   profileId: true,
   resumeCheckAcceptedHash: true,
   resumeDocument: true,
+  resumeAnswer: true,
+  resumeKept: true,
   coverLetterDocument: true,
   resumeFiles: { select: { format: true } },
   profile: {
@@ -291,13 +295,17 @@ const checkSelect = {
   },
 } as const;
 
-/** The Resume's text: the stored Word file's, else the generated document's strings. */
+/**
+ * The Resume's text: its Word file's (the copy in the Resume folder, built
+ * from its JSON when missing, or an old stored file), else the generated
+ * document's strings.
+ */
 async function resumeText(bidId: string, document: unknown): Promise<string | null> {
-  const docx = await prisma.bidResumeFile.findUnique({
-    where: { bidId_format: { bidId, format: 'docx' } },
-    select: { data: true },
+  const docx = await resumeFile(bidId, 'docx').catch((error) => {
+    if (error instanceof NotFoundError) return null; // in a backup
+    throw error;
   });
-  if (docx) return docxText(Buffer.from(docx.data));
+  if (docx) return docxText(docx.data);
   if (document === null || document === undefined) return null;
   const strings: string[] = [];
   const visit = (value: unknown) => {
@@ -318,9 +326,10 @@ export async function checkBid(bidId: string, ignoreList?: string[]): Promise<Re
   const bid = await prisma.bid.findUnique({ where: { id: bidId }, select: checkSelect });
   if (!bid) return null;
   let text: string | null = null;
-  const files = bid.resumeFiles.map((f) => f.format);
+  const hasResume = bid.resumeAnswer !== null || bid.resumeFiles.length > 0 || bid.resumeKept || bid.resumeDocument !== null;
+  const files = hasResume && bid.resumeDocument === null ? await resumeFormats(bid.id) : bid.resumeFiles.map((f) => f.format);
   try {
-    text = bid.resumeFiles.length || bid.resumeDocument !== null ? await resumeText(bid.id, bid.resumeDocument) : null;
+    text = hasResume ? await resumeText(bid.id, bid.resumeDocument) : null;
   } catch (error) {
     logger.warn({ err: error, bidId }, 'Resume check: could not read the Word file');
     text = '';
@@ -399,10 +408,8 @@ export async function clearCheck(bidId: string): Promise<void> {
   });
 }
 
-/** Has a Resume: a stored file or a generated document. */
-export const HAS_RESUME: PrismaTypes.BidWhereInput = {
-  OR: [{ resumeDocument: { not: PrismaTypes.AnyNull } }, { resumeFiles: { some: {} } }],
-};
+/** Has a Resume: JSON, a stored or kept file, or a generated document. */
+export { HAS_RESUME };
 
 /** Checks every Draft (and Ready) application in `scope` that has a Resume. */
 export async function checkAll(scope: PrismaTypes.BidWhereInput): Promise<{ checked: number; ok: number; flagged: number }> {

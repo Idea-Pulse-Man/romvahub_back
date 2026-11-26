@@ -4,15 +4,25 @@ import type { Bid } from '../domain/types.js';
 import { BadGatewayError, BadRequestError } from '../http/errors.js';
 import { toMarkdown } from '../jobs/markdown.js';
 import * as profileService from '../profile/profile.service.js';
-import { convertDocxToPdf, processMakerJson, renderStructuredWithMaker } from '../resume/maker/maker.service.js';
+import { convertDocxToPdf } from '../resume/maker/maker.service.js';
+import { readTemplateBytes } from '../resume/maker/templates.js';
 import { AiResumeSchema } from '../resume/resume.schemas.js';
 import { CoverLetterPayloadSchema, type CoverLetterPayload } from '../cover-letter/cover-letter.schemas.js';
-import { renderCoverLetter } from '../cover-letter/cover-letter.service.js';
 import { settingsForMake } from '../profiles/profile-prompts.service.js';
 import mammoth from 'mammoth';
+import { prisma } from '../prisma.js';
 import { parseJsonAnswer } from './json-answer.js';
 import { resumeAnswerProblems, resumeRetryMessage } from './resume-answer-check.js';
 import { checkBidQuietly } from '../resume/resume-check.js';
+import { applicationFolderName, fileStem } from '../resume/store/names.js';
+import {
+  buildResumeDocx,
+  coverLetterFile,
+  resumeFile,
+  saveMadeResume,
+  type ResumeBuild,
+} from '../resume/store/resume-store.js';
+import { keepTemplateVersion } from '../resume/store/template-versions.js';
 
 /**
  * One application's Resume and cover letter, as four steps around the two
@@ -54,31 +64,7 @@ export interface MakeJob {
   resumeMessage: string;
 }
 
-const UNSAFE = /[\\/:*?"<>|#%]+/g;
-
-/** "Latent AI", "AI Engineer" → "Latent_Ai_Ai_Engineer" — the Resume Builder's folder names. */
-export function applicationFolderName(company: string, role: string): string {
-  return (
-    `${company} ${role}`
-      .replace(UNSAFE, ' ')
-      .split(/\s+/)
-      .filter(Boolean)
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-      .join('_')
-      .replace(/[. ]+$/, '') || 'Application'
-  );
-}
-
-/** "Jonathan", "Bai", "Latent AI" → "Jonathan_Bai_Latent_AI" — the Resume Builder's file stems. */
-export function fileStem(...parts: string[]): string {
-  return parts
-    .join(' ')
-    .replace(UNSAFE, ' ')
-    .split(/\s+/)
-    .filter(Boolean)
-    .join('_')
-    .replace(/[._]+$/, '');
-}
+export { applicationFolderName, fileStem } from '../resume/store/names.js';
 
 /** Everything the two chats need, read from the application, its Profile and the Profile's prompts. */
 export async function prepareMake(actor: Actor, bidId: string): Promise<MakeJob> {
@@ -193,23 +179,25 @@ export async function finishResume(job: MakeJob, answer: string): Promise<Finish
   }
 
   // The app's own prompt answers in its structured shape; a Resume Maker
-  // prompt (P.txt) in Maker JSON. Both go into the same Word template.
-  const templateId = job.prompts.templateId;
+  // prompt (P.txt) in Maker JSON. Both go into the same Word template. The
+  // template version is kept, so this Resume can be built again exactly.
   const name = profileName(job);
-  const structured = AiResumeSchema.safeParse(json);
+  let build: ResumeBuild;
   let docx: Buffer;
   try {
-    docx = structured.success
-      ? (
-          await renderStructuredWithMaker({
-            document: structured.data,
-            format: 'docx',
-            name: name || undefined,
-            fallbackCompanies: job.profile.workExperience.map((entry) => entry.company),
-            templateId,
-          })
-        ).file
-      : (await processMakerJson({ json: json as object, format: 'docx', templateId })).file;
+    const template = await readTemplateBytes(job.prompts.templateId);
+    const templateSha256 = await keepTemplateVersion(template);
+    build = AiResumeSchema.safeParse(json).success
+      ? {
+          kind: 'structured',
+          templateId: template.id,
+          templateSha256,
+          name: name || undefined,
+          fallbackCompanies: job.profile.workExperience.map((entry) => entry.company),
+          stem: job.stem,
+        }
+      : { kind: 'maker', templateId: template.id, templateSha256, stem: job.stem };
+    docx = await buildResumeDocx(json, build);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     // The database dropping out is not the answer's fault: passed on as it is.
@@ -220,15 +208,9 @@ export async function finishResume(job: MakeJob, answer: string): Promise<Finish
 
   const pdfName = `${job.stem}_resume.pdf`;
   const docxName = `${job.stem}_resume.docx`;
-  const bid = await bidsService.replaceResumeFiles(job.actor, job.bid.id, [
-    { format: 'pdf', name: pdfName, contentType: 'application/pdf', data: pdf },
-    {
-      format: 'docx',
-      name: docxName,
-      contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      data: docx,
-    },
-  ]);
+  // The JSON goes on the application; the Word and PDF files to the Resume folder.
+  await saveMadeResume({ bidId: job.bid.id, answer: json, build, docx, pdf });
+  const bid = await bidsService.getBid(job.actor, job.bid.id);
   // The Resume check, as it is saved: a bad one is flagged at once.
   await checkBidQuietly(job.bid.id);
 
@@ -268,7 +250,10 @@ export function coverLetterMessage(job: MakeJob, resume: unknown): string {
  * Resume's text, read from the stored Word file, stands in for ChatGPT's JSON.
  */
 export async function coverLetterMessageFromStoredResume(job: MakeJob): Promise<string> {
-  const docx = await bidsService.getResumeFile(job.actor, job.bid.id, 'docx');
+  // A Resume kept as JSON is the JSON the first chat wrote.
+  const answer = await prisma.bid.findUnique({ where: { id: job.bid.id }, select: { resumeAnswer: true } });
+  if (answer?.resumeAnswer) return coverLetterMessage(job, answer.resumeAnswer);
+  const docx = await resumeFile(job.bid.id, 'docx');
   if (!docx) throw new BadRequestError('This application has no stored Resume to write the cover letter from.');
   const { value } = await mammoth.extractRawText({ buffer: docx.data });
   const resumeText = value.replace(/\n{3,}/g, '\n\n').trim();
@@ -301,22 +286,22 @@ export interface FinishedCoverLetter {
 /** ChatGPT's second answer → the letter as PDF and Word, stored on the application. */
 export async function finishCoverLetter(job: MakeJob, answer: string): Promise<FinishedCoverLetter> {
   const letter = toCoverLetter(parseJsonAnswer(answer), job.bid);
-  const [letterPdf, letterDocx] = await Promise.all(
-    (['pdf', 'docx'] as const).map((format) =>
-      renderCoverLetter(
-        job.ownerUserId,
-        { document: letter, format },
-        { date: job.bid.bidDate, profileId: job.bid.candidate?.profileId },
-      ),
-    ),
-  );
+  // Rendered once each and kept in the Resume folder; the JSON goes on the application.
+  const context = {
+    bidId: job.bid.id,
+    ownerUserId: job.ownerUserId,
+    bidDate: job.bid.bidDate,
+    profileId: job.bid.candidate?.profileId,
+  };
+  const letterPdf = await coverLetterFile(context, letter, 'pdf');
+  const letterDocx = await coverLetterFile(context, letter, 'docx');
   const bid = await bidsService.setBidCoverLetter(job.actor, job.bid.id, letter);
   await checkBidQuietly(job.bid.id);
   return {
     bid,
     files: {
-      coverLetterPdf: { name: `${job.stem}_cover_letter.pdf`, base64: letterPdf!.file.toString('base64') },
-      coverLetterDocx: { name: `${job.stem}_cover_letter.docx`, base64: letterDocx!.file.toString('base64') },
+      coverLetterPdf: { name: `${job.stem}_cover_letter.pdf`, base64: letterPdf.data.toString('base64') },
+      coverLetterDocx: { name: `${job.stem}_cover_letter.docx`, base64: letterDocx.data.toString('base64') },
     },
   };
 }

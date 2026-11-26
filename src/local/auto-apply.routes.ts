@@ -5,14 +5,15 @@ import { requireAuth } from '../auth/require-auth.js';
 import * as bidsService from '../bids/bids.service.js';
 import { bidAccessScope } from '../bids/bids.service.js';
 import { CoverLetterPayloadSchema } from '../cover-letter/cover-letter.schemas.js';
-import { renderCoverLetter } from '../cover-letter/cover-letter.service.js';
 import { fromDbStatus } from '../domain/status.js';
 import { validate, type ValidatedRequest } from '../http/validate.js';
 import { prisma } from '../prisma.js';
+import { logger } from '../logger.js';
 import { Prisma as PrismaTypes } from '../generated/prisma/client.js';
 import * as profileService from '../profile/profile.service.js';
 import { currentJob } from './current-job.js';
 import { fileStem } from './make-steps.js';
+import { coverLetterFile, HAS_MADE_RESUME, resumeFile } from '../resume/store/resume-store.js';
 
 /**
  * Apply: the Chrome extension and the desktop agent open each application's
@@ -78,8 +79,8 @@ autoApplyRouter.get('/apply/next', validate({ query: NextQuerySchema }), async (
             { coverLetterDocument: { equals: PrismaTypes.AnyNull } },
             ...(skip.length ? [{ id: { in: skip } }] : []),
           ],
-          resumeFiles: { some: {} },
         },
+        HAS_MADE_RESUME,
       ],
     },
     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
@@ -127,10 +128,15 @@ autoApplyRouter.get('/apply/:bidId', validate({ params: BidParamsSchema }), asyn
     ? await profileService.getProfileById(bid.candidate.profileId)
     : await profileService.getProfile(ownerUserId);
 
-  const resumePdf = await bidsService.getResumeFile(actor, bid.id, 'pdf');
-  const made = await prisma.bid.findUnique({ where: { id: bid.id }, select: { resumeDocument: true } });
+  // The maker's Resume (its copy, else built from its JSON) or an old stored file.
+  const resumePdf = await resumeFile(bid.id, 'pdf').catch((error) => {
+    logger.warn({ err: error, bidId: bid.id }, 'Apply: the Resume PDF could not be had');
+    return null;
+  });
+  const made = await prisma.bid.findUnique({ where: { id: bid.id }, select: { resumeAnswer: true, resumeDocument: true } });
+  const madeJson = made?.resumeAnswer ?? made?.resumeDocument ?? null;
   // The same current job, under the same title, as the Resume attached to the form.
-  const current = currentJob(profile.workExperience, made?.resumeDocument);
+  const current = currentJob(profile.workExperience, madeJson);
   const letterRaw = await bidsService.getBidCoverLetter(actor, bid.id);
   const letter = CoverLetterPayloadSchema.safeParse(letterRaw);
 
@@ -144,12 +150,12 @@ autoApplyRouter.get('/apply/:bidId', validate({ params: BidParamsSchema }), asyn
   let coverLetterPdf: { name: string; base64: string } | null = null;
   if (letter.success) {
     try {
-      const rendered = await renderCoverLetter(
-        ownerUserId,
-        { document: letter.data, format: 'pdf' },
-        { date: bid.bidDate, profileId: bid.candidate?.profileId },
+      const rendered = await coverLetterFile(
+        { bidId: bid.id, ownerUserId, bidDate: bid.bidDate, profileId: bid.candidate?.profileId },
+        letter.data,
+        'pdf',
       );
-      coverLetterPdf = { name: `${stem}_cover_letter.pdf`, base64: rendered.file.toString('base64') };
+      coverLetterPdf = { name: `${stem}_cover_letter.pdf`, base64: rendered.data.toString('base64') };
     } catch {
       coverLetterPdf = null; // The text is still offered for a cover letter box.
     }
@@ -188,7 +194,7 @@ autoApplyRouter.get('/apply/:bidId', validate({ params: BidParamsSchema }), asyn
     resume: resumePdf ? { name: resumePdf.name || `${stem}_resume.pdf`, base64: resumePdf.data.toString('base64') } : null,
     coverLetter: coverLetterPdf,
     jobDescription: (bid.jobDescription ?? '').slice(0, 20_000),
-    resumeText: made?.resumeDocument ? JSON.stringify(made.resumeDocument).slice(0, 20_000) : '',
+    resumeText: madeJson ? JSON.stringify(madeJson).slice(0, 20_000) : '',
     coverLetterText: letter.success
       ? [letter.data.greeting, ...letter.data.paragraphs, letter.data.closing, fullName].filter(Boolean).join('\n\n')
       : '',

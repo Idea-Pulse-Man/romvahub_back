@@ -154,16 +154,10 @@ export async function processMakerJson(input: {
   json: string | object;
   format: ResumeFormat;
   templateId?: string;
+  /** The template's bytes, when the caller has them (a stored version): no lookup by name. */
+  template?: { id: string; bytes: Buffer };
 }): Promise<MakerRenderResult> {
-  let template;
-  try {
-    template = await readTemplateBytes(input.templateId);
-  } catch (error) {
-    if (error instanceof BadRequestError || error instanceof Error) {
-      throw error;
-    }
-    throw error;
-  }
+  const template = input.template ?? (await readTemplateBytes(input.templateId));
 
   let merged;
   try {
@@ -190,8 +184,10 @@ export async function renderStructuredWithMaker(input: {
   templateId?: string;
   /** Employers to use when the document carries none (the profile's work history). */
   fallbackCompanies?: string[];
+  /** The template's bytes, when the caller has them (a stored version): no lookup by name. */
+  template?: { id: string; bytes: Buffer };
 }): Promise<MakerRenderResult> {
-  const template = await readTemplateBytes(input.templateId);
+  const template = input.template ?? (await readTemplateBytes(input.templateId));
 
   const flatInput = {
     company: input.document.company,

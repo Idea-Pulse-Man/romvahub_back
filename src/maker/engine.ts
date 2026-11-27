@@ -57,7 +57,12 @@ export const DEFAULT_CHOICES: Choices = {
   method: 'one',
   ai: 'chatgpt',
   letterAi: 'chatgpt',
-  models: { chatgpt: { mode: 'chat', model: 'GPT-6', effort: 'high' }, deepseek: { deepThink: true, search: true } },
+  models: {
+    chatgpt: { mode: 'chat', model: 'GPT-6', effort: 'high' },
+    deepseek: { deepThink: true, search: true },
+    // Romva Apply 3.6.1+ sets these in claude.ai.
+    claude: { model: 'Opus 5.5', thinking: true },
+  },
 };
 
 /** A task given out and not answered for this long is given up (the AI page hung, the browser closed). */

@@ -56,8 +56,9 @@ sharedProfilesRouter.put(
 );
 
 /**
- * A Profile's own Resume settings for "Make": Resume template and Resume
- * prompt (both required) and cover letter prompt (optional). Readable and
+ * A Profile's own Resume settings for "Make": Resume template (required),
+ * Resume prompt (one step) or Step 1 and Step 2 prompts (two steps), and
+ * cover letter prompt (optional). Readable and
  * editable by an admin and by every User the Profile is shared with. See
  * `profile-prompts.service.ts`.
  */
@@ -69,6 +70,9 @@ sharedProfilesRouter.get('/:id/prompts', validate({ params: ProfileIdParamsSchem
 const promptField = z.string().max(promptsService.MAX_PROMPT_LENGTH, 'That prompt is too long.').nullable().optional();
 const UpdateProfileSettingsSchema = z.object({
   resumePrompt: promptField,
+  // Two steps: Step 1 (the information the Resume needs) and Step 2 (the Resume).
+  resumeStep1Prompt: promptField,
+  resumeStep2Prompt: promptField,
   coverLetterPrompt: promptField,
   resumeTemplateId: z.string().trim().min(1).max(200).optional(),
 });

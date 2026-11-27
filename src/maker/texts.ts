@@ -7,12 +7,12 @@
 
 import { namedSkillGroup } from '../resume/maker/placeholders.js';
 
-/** Two steps, first step: the draft must be JSON only. */
+/** Two steps, Step 1: its answer (the information the Resume needs) must be JSON only. */
 export const JSON_ONLY = 'Answer with one valid JSON object only: no text before or after it.';
-/** Two steps, the draft's second try. */
+/** Two steps, Step 1's second try. */
 export const INVALID_JSON = 'Your answer must be one JSON object that JSON.parse accepts (double quotes, no comments, no trailing commas).';
 
-/** The draft's JSON, pretty-printed, or null when the answer holds no JSON object. */
+/** Step 1's JSON, pretty-printed, or null when the answer holds no JSON object. */
 export function jsonIn(text: string): string | null {
   for (const candidate of [text, text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)]) {
     try {
@@ -25,22 +25,6 @@ export function jsonIn(text: string): string | null {
     }
   }
   return null;
-}
-
-/** The Resume request with the first AI's draft under it (two steps). */
-export function withDraft(message: string, draft: string | null | undefined): string {
-  if (!draft) return message;
-  return [
-    message,
-    '',
-    'Another AI answered this same request with the draft below. Use it only as a first draft:',
-    'check every claim against what is given above, correct and improve it, and leave out',
-    'anything invented. The instructions above take priority over the draft, and your answer',
-    'is in the format they ask for.',
-    '',
-    'DRAFT:',
-    draft,
-  ].join('\n');
 }
 
 /** Said under every Resume request: the answer goes into the Resume word for word. */

@@ -7,6 +7,7 @@ import { ForbiddenError } from '../http/errors.js';
 import { validate, type ValidatedRequest } from '../http/validate.js';
 import { logger } from '../logger.js';
 import { prisma } from '../prisma.js';
+import { assertProfileAccess } from '../profiles/profile-prompts.service.js';
 import type { ComputerChoice } from './auto-make-queue.js';
 import { setSwitches } from './auto-make-state.js';
 
@@ -87,6 +88,16 @@ makerComputersRouter.put(
     // A Profile token's computer works on that Profile, whatever was sent: the token signing this
     // request, else the one its Romva Apply last asked for work with.
     const profileId = actor.profileId ?? existing?.tokenProfileId ?? body.profileId ?? null;
+    // Start only for a Profile the signed-in account may use too (the token's must be the account's).
+    if (body.running && profileId) {
+      try {
+        await assertProfileAccess(actor, profileId);
+      } catch {
+        throw new ForbiddenError(
+          'The token in Romva Apply on this computer is for a Profile your account can\'t use. Paste the token of one of your Profiles there.',
+        );
+      }
+    }
     // A start No. counts in one Profile's numbers only: dropped when another Profile was sent.
     const keepsStart = profileId !== null && (body.profileId == null || body.profileId === profileId);
     const data = {

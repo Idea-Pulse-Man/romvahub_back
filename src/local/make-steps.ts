@@ -169,7 +169,11 @@ export async function checkResumeAnswer(job: MakeJob, answer: string): Promise<R
     return { problems, retryMessage: resumeRetryMessage(job.resumeMessage, problems, null) };
   }
   const problems = await problemsIn(job, json as object, { allBullets: true });
-  return problems.length ? { problems, retryMessage: resumeRetryMessage(job.resumeMessage, problems, json) } : { problems };
+  if (!problems.length) return { problems };
+  // A Resume that only lacks some bullets goes back to be completed; anything else (no summary, a
+  // refusal in JSON…) is asked for whole again, without it.
+  const buildable = (await problemsIn(job, json as object)).length === 0;
+  return { problems, retryMessage: resumeRetryMessage(job.resumeMessage, problems, buildable ? json : null) };
 }
 
 /** ChatGPT's first answer → the Resume in the Profile's Word template, as Word and PDF, stored on the application. */

@@ -266,7 +266,7 @@ export async function answerTask(actor: Actor, worker: string, taskId: string, a
   const task = await ownTask(worker, taskId);
   await prisma.makerTask.update({ where: { id: task.id }, data: { status: 'done', answer: answer.slice(0, 500_000), doneAt: new Date() } });
   await touchClaim(task.bidId, worker);
-  const context = (task.context ?? {}) as { draft?: string | null };
+  const context = (task.context ?? {}) as { draft?: string | null; firstAnswer?: string };
   const choices = await choicesFor(worker);
   const job = await prepareMake(actor, task.bidId);
 
@@ -294,7 +294,8 @@ export async function answerTask(actor: Actor, worker: string, taskId: string, a
       if (marks.length) retry = withDraftsPointedOut(retry, marks);
       await addTask(actor, worker, task.bidId, 'resume', task.site as Site, `${withDraft(retry, context.draft)}\n\n${FINISHED_TEXT}`, {
         attempt: 2,
-        context,
+        // The first answer, kept: built after all when the second one cannot be (not JSON, "I can do that…").
+        context: { ...context, firstAnswer: text },
       });
       logger.info({ bidId: task.bidId, problems: check.problems, marks }, 'Maker: Resume asked for again');
       return;
@@ -303,8 +304,17 @@ export async function answerTask(actor: Actor, worker: string, taskId: string, a
     try {
       letterMessage = (await finishResume(job, text)).coverLetterMessage;
     } catch (error) {
-      await giveUp(task.bidId, worker, error instanceof Error ? error.message : String(error), true);
-      return;
+      const reason = error instanceof Error ? error.message : String(error);
+      // The second answer could not be built: the first one is, when it can be (it only lacked some bullets…).
+      const first = typeof context.firstAnswer === 'string' ? context.firstAnswer : null;
+      try {
+        if (!first) throw error;
+        letterMessage = (await finishResume(job, first)).coverLetterMessage;
+        logger.info({ bidId: task.bidId, reason }, 'Maker: the second Resume answer could not be used; the first one was built');
+      } catch {
+        await giveUp(task.bidId, worker, reason, true);
+        return;
+      }
     }
     await addTask(actor, worker, task.bidId, 'letter', choices.letterAi, letterMessage);
     return;

@@ -186,8 +186,26 @@ export function problemsForTags(
  * the same request, with what was wrong spelled out.
  */
 export function resumeRetryMessage(resumeMessage: string, problems: string[], json: unknown): string {
-  const keys =
-    json && typeof json === 'object' && !Array.isArray(json) ? Object.keys(json).slice(0, 40).join(', ') : '';
+  // The answer was JSON: it goes in, so the new chat (which never saw it) completes it rather than
+  // answering "I can do that…" about an answer it cannot see.
+  if (json && typeof json === 'object' && !Array.isArray(json)) {
+    return [
+      resumeMessage,
+      '',
+      '================================================================================',
+      'YOUR ANSWER TO THIS REQUEST, TO COMPLETE',
+      '================================================================================',
+      'Below is the JSON written for the request above. It is not complete yet:',
+      ...problems.map((problem) => `- ${problem}`),
+      '',
+      'Return the same JSON with these filled in, following the request above. Keep everything else as it is.',
+      'Reply with the JSON only, in a single ```json code block: no questions, no notes.',
+      '',
+      '```json',
+      JSON.stringify(json, null, 2),
+      '```',
+    ].join('\n');
+  }
   return [
     resumeMessage,
     '',
@@ -195,7 +213,6 @@ export function resumeRetryMessage(resumeMessage: string, problems: string[], js
     'YOUR PREVIOUS ANSWER TO THIS REQUEST COULD NOT BE USED',
     '================================================================================',
     ...problems.map((problem) => `- ${problem}`),
-    ...(keys ? [`(Its top-level keys were: ${keys}.)`] : []),
     '',
     'Write the whole JSON again, complete: every section filled in, using exactly the key names and the shape the prompt above asks for.',
     'Reply with the JSON only, in a single ```json code block.',

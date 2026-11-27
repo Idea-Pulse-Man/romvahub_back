@@ -32,7 +32,7 @@ import {
   parseFingerprint,
   type ProofFingerprint,
 } from '../proof/fingerprint.js';
-import { bidInclude, candidatePhotoKey, toApiBid, type BidRow } from './bids.mapper.js';
+import { bidInclude, bidOmitHeavy, candidatePhotoKey, toApiBid, type BidRow } from './bids.mapper.js';
 import { HAS_RESUME, NO_RESUME } from '../resume/store/resume-store.js';
 import { dropCopiesQuietly, dropKept } from '../resume/store/folder.js';
 import { filesFollowStatus } from '../resume/store/file-rules.js';
@@ -57,7 +57,55 @@ import {
  * way, but the map is what keeps the same photo from being signed to six
  * different URLs on one page, which would defeat any caching the browser does.
  */
-async function mapBids(rows: BidRow[]): Promise<Bid[]> {
+/** A bid row as a list reads it: the big JSON columns may be left out (`bidOmitHeavy`). */
+type Heavy = keyof typeof bidOmitHeavy;
+type AnyBidRow = Omit<BidRow, Heavy> & Partial<Pick<BidRow, Heavy>>;
+
+interface HeavyFacts {
+  id: string;
+  answer: string | null;
+  document: string | null;
+  letter: boolean;
+  chat: number | null;
+}
+
+/**
+ * The few facts the API needs about the big JSON columns, worked out by the
+ * database: whether each is there, a digest that changes when it does, and the
+ * chat's length. Used for every bid, read whole or not, so the same Resume
+ * always has the same fingerprint.
+ */
+async function heavyFacts(ids: string[]): Promise<Map<string, HeavyFacts>> {
+  if (ids.length === 0) return new Map();
+  const isNull = (column: string) => `("${column}" IS NULL OR jsonb_typeof("${column}") = 'null')`;
+  const rows = await prisma.$queryRawUnsafe<HeavyFacts[]>(
+    `SELECT id::text AS id,
+       CASE WHEN ${isNull('resumeAnswer')} THEN NULL
+            ELSE md5("resumeAnswer"::text || '|' || coalesce("resumeBuild"::text, '')) END AS answer,
+       CASE WHEN ${isNull('resumeDocument')} THEN NULL ELSE md5("resumeDocument"::text) END AS document,
+       NOT ${isNull('coverLetterDocument')} AS letter,
+       CASE WHEN jsonb_typeof("applicationChat") = 'array' THEN jsonb_array_length("applicationChat") END AS chat
+     FROM "bids" WHERE id = ANY($1::uuid[])`,
+    ids,
+  );
+  return new Map(rows.map((row) => [row.id, { ...row, chat: row.chat === null ? null : Number(row.chat) }]));
+}
+
+async function mapBids(input: AnyBidRow[]): Promise<Bid[]> {
+  // Small stand-ins for the big columns: what `toApiBid` reads from them is only
+  // whether they are there, a fingerprint, and the chat's length.
+  const facts = await heavyFacts(input.map((row) => row.id));
+  const rows = input.map((row) => {
+    const fact = facts.get(row.id);
+    return {
+      ...row,
+      resumeAnswer: fact?.answer ? { digest: fact.answer } : null,
+      resumeBuild: null,
+      resumeDocument: fact?.document ? { digest: fact.document } : null,
+      coverLetterDocument: fact?.letter ? { present: true } : null,
+      applicationChat: fact?.chat != null ? Array.from({ length: fact.chat }, () => null) : null,
+    } as BidRow;
+  });
   const keys = [...new Set(rows.map(candidatePhotoKey).filter((key): key is string => !!key))];
   const signed = new Map(
     await Promise.all(keys.map(async (key) => [key, await signPhotoUrl(key)] as const)),
@@ -74,7 +122,7 @@ async function mapBids(rows: BidRow[]): Promise<Bid[]> {
 }
 
 /** One row, for the endpoints that answer with a single bid. */
-async function mapBid(row: BidRow): Promise<Bid> {
+async function mapBid(row: AnyBidRow): Promise<Bid> {
   const [bid] = await mapBids([row]);
   return bid as Bid;
 }
@@ -353,6 +401,7 @@ export async function listBids(actor: Actor, query: ListBidsQuery = {}): Promise
   const rows = await prisma.bid.findMany({
     where: await listWhere(actor, query),
     include: bidInclude,
+    omit: bidOmitHeavy,
     orderBy: listOrderBy(query.sort),
   });
 
@@ -381,6 +430,7 @@ export async function listBidsPage(actor: Actor, query: ListBidsQuery): Promise<
     prisma.bid.findMany({
       where,
       include: bidInclude,
+      omit: bidOmitHeavy,
       orderBy: listOrderBy(query.sort),
       skip: (page - 1) * pageSize,
       take: pageSize,
@@ -422,6 +472,7 @@ export async function pipelineBoard(actor: Actor, query: PipelineQuery): Promise
         prisma.bid.findMany({
           where: { AND: [scope, { status: toDbStatus(status) }] },
           include: bidInclude,
+          omit: bidOmitHeavy,
           orderBy: listOrderBy('updatedAt'),
           take: query.pageSize,
         }),
@@ -1077,7 +1128,11 @@ async function findProofMatches(bidId: string | null, ownerId: string, fingerpri
     .sort((a, b) => Number(b.distance.identical) - Number(a.distance.identical) || a.distance.difference - b.distance.difference);
   if (hits.length === 0) return [];
 
-  const rows = await prisma.bid.findMany({ where: { id: { in: hits.map((hit) => hit.id) } }, include: bidInclude });
+  const rows = await prisma.bid.findMany({
+    where: { id: { in: hits.map((hit) => hit.id) } },
+    include: bidInclude,
+    omit: bidOmitHeavy,
+  });
   const bids = new Map((await mapBids(rows)).map((bid) => [bid.id, bid]));
 
   return hits.flatMap((hit) => {

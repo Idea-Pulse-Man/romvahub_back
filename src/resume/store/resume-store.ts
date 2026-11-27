@@ -8,6 +8,7 @@ import { AiResumeSchema } from '../resume.schemas.js';
 import { renderCoverLetter } from '../../cover-letter/cover-letter.service.js';
 import { CoverLetterPayloadSchema, type CoverLetterPayload } from '../../cover-letter/cover-letter.schemas.js';
 import {
+  adoptLegacyCopy,
   dropKept,
   keptFormats,
   readCopy,
@@ -76,12 +77,30 @@ export const HAS_MADE_RESUME: PrismaTypes.BidWhereInput = {
 
 const hash = (...parts: string[]) => createHash('sha256').update(parts.join('\u0000')).digest('hex').slice(0, 12);
 
-/** The copy's key: changes whenever the JSON or what it is built with does. */
+/**
+ * JSON with every object's keys sorted. The database (jsonb) gives an object
+ * back with its keys in its own order, not the order it was saved in, so a
+ * key made from plain `JSON.stringify` when saving was not the key made from
+ * the same JSON read back: the copies were never found, and were made again.
+ */
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(value ?? null, (_name, inner: unknown) =>
+    inner && typeof inner === 'object' && !Array.isArray(inner)
+      ? Object.fromEntries(Object.entries(inner).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : inner,
+  );
+}
+
+/**
+ * The copy's key: changes whenever the JSON or what it is built with does.
+ * `k` + 12 hex characters; the 12-character keys before it are "legacy"
+ * (`adoptLegacyCopy`).
+ */
 export const resumeKey = (answer: unknown, build: ResumeBuild) =>
-  hash(JSON.stringify(answer), JSON.stringify(build), RENDER_VERSION);
+  `k${hash(canonicalJson(answer), canonicalJson(build), RENDER_VERSION)}`;
 
 export const letterKey = (letter: unknown, date: string, profileId: string | null | undefined) =>
-  hash(JSON.stringify(letter), date, profileId ?? '', RENDER_VERSION);
+  `k${hash(canonicalJson(letter), date, profileId ?? '', RENDER_VERSION)}`;
 
 /** `Bid.resumeBuild` as stored, or null when it is not one. */
 export function parseBuild(value: unknown): ResumeBuild | null {
@@ -137,7 +156,8 @@ async function keepCopy(bidId: string, kind: 'resume' | 'cover-letter', key: str
 async function resumeFromAnswer(bidId: string, answer: unknown, build: ResumeBuild, format: DocFormat): Promise<Buffer> {
   const key = resumeKey(answer, build);
   const name = resumeFileName(build.stem, format);
-  const copy = await readCopy(bidId, 'resume', key, format);
+  let copy = await readCopy(bidId, 'resume', key, format);
+  if (!copy && (await adoptLegacyCopy(bidId, 'resume', key))) copy = await readCopy(bidId, 'resume', key, format);
   if (copy) return copy.data;
 
   const docx = await once(`${bidId}:${key}:docx`, async () => {
@@ -277,7 +297,10 @@ export interface LetterContext {
 /** The cover letter as PDF or Word: its copy in the folder, else rendered from its JSON and kept. */
 export async function coverLetterFile(context: LetterContext, letter: CoverLetterPayload, format: DocFormat): Promise<ResumeFile> {
   const key = letterKey(letter, context.bidDate, context.profileId);
-  const copy = await readCopy(context.bidId, 'cover-letter', key, format);
+  let copy = await readCopy(context.bidId, 'cover-letter', key, format);
+  if (!copy && (await adoptLegacyCopy(context.bidId, 'cover-letter', key))) {
+    copy = await readCopy(context.bidId, 'cover-letter', key, format);
+  }
   if (copy) return { name: copy.name, contentType: CONTENT_TYPE[format], data: copy.data };
 
   let name = '';

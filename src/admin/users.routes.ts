@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { currentUserId, requireAdmin, requireAuth } from '../auth/require-auth.js';
-import { BadRequestError } from '../http/errors.js';
+import { BadRequestError, ForbiddenError } from '../http/errors.js';
+import { prisma } from '../prisma.js';
 import { validate, type ValidatedRequest } from '../http/validate.js';
 import { ProfileSchema, type ProfileInput } from '../profile/profile.schemas.js';
 import * as profileService from '../profile/profile.service.js';
@@ -27,6 +28,32 @@ import * as userPromptsService from '../ai-config/user-prompts.service.js';
 export const adminUsersRouter: Router = Router();
 
 adminUsersRouter.use(requireAuth, requireAdmin);
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The Super Admin's account is the Super Admin's alone. Other admins see it in
+ * the list (and its sign-ins) but change nothing of it: not its sign-in email
+ * or password — which would hand them the account, authenticator setup and
+ * all — nor its profile, photo, shares or prompts. Read from the database on
+ * every call, like `requireSuperAdmin`.
+ */
+adminUsersRouter.use('/:id', async (req, _res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD') return next();
+  const id = req.params.id;
+  // Not an account id: the route's own check answers.
+  if (!id || !UUID.test(id)) return next();
+  const actorId = currentUserId(req);
+  if (id === actorId) return next();
+  const [target, actor] = await Promise.all([
+    prisma.user.findUnique({ where: { id }, select: { superAdmin: true } }),
+    prisma.user.findUnique({ where: { id: actorId }, select: { superAdmin: true, status: true } }),
+  ]);
+  if (target?.superAdmin && !(actor?.superAdmin && actor.status === 'ACTIVE')) {
+    throw new ForbiddenError('Only the Super Admin can change the Super Admin account.');
+  }
+  return next();
+});
 
 const photoUpload = multer({
   storage: multer.memoryStorage(),

@@ -74,7 +74,7 @@ Say '1/6 Checking this VPS'
 if ((Get-Content $EnvFile | Where-Object { $_ -match '^DATABASE_URL=.*supabase\.com' })) {
   Fail 'The server already uses Supabase (C:\romva\backend\.env). Nothing to move.'
 }
-$latest = (Psql $Local "select count(*) from information_schema.tables where table_schema='public' and table_name='maker_computers'").Trim()
+$latest = (Psql $Local "select count(*) from information_schema.tables where table_schema='public' and table_name='maker_tasks'").Trim()
 if ($latest -ne '1') { Fail 'The code is not the newest yet. Run C:\romva\update.bat as administrator first, then this file again.' }
 $bytes = [int64]("0" + (Psql $Local 'select pg_database_size(current_database())').Trim())
 $mb = [math]::Round($bytes / 1MB)

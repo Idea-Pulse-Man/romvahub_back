@@ -267,17 +267,27 @@ autoMakeJobsRouter.post('/heartbeat', validate({ body: HeartbeatSchema }), async
   res.json({ ok: true });
 });
 
+/** Make clicked in a Chrome with Romva Apply: that computer (maker.js's name), to make it now. */
+const RequestMakeSchema = z.object({ worker: z.string().min(1).max(200).optional() }).optional();
+
 /**
  * "Make" clicked on an application in the table: the Resume and cover letter
  * (or just the letter, when the Resume is there) are made next, before every
  * other waiting application, by whichever worker asks first.
+ *
+ * With `worker` (clicked in the app's Chrome, where Romva Apply is): that
+ * computer makes it now, even never started with the Start window — it is
+ * noted here (stopped: at Stop only what Make asks for is made) — provided the
+ * token in its Romva Apply is for this application's Profile.
  */
-autoMakeJobsRouter.post('/jobs/:bidId/request', validate({ params: BidParamsSchema }), async (req, res) => {
+autoMakeJobsRouter.post('/jobs/:bidId/request', validate({ params: BidParamsSchema, body: RequestMakeSchema }), async (req, res) => {
   const actor = currentActor(req);
   const { bidId } = (req as ValidatedRequest<unknown, BidParams>).valid.params;
+  const worker = (req as ValidatedRequest<z.infer<typeof RequestMakeSchema>>).valid.body?.worker;
   const bid = await prisma.bid.findFirst({
     where: { id: bidId, ...bidAccessScope(actor) },
     select: {
+      profileId: true,
       status: true,
       jobDescription: true,
       resumeDocument: true,
@@ -298,8 +308,20 @@ autoMakeJobsRouter.post('/jobs/:bidId/request', validate({ params: BidParamsSche
   if (hasResume && bid.coverLetterDocument !== null) {
     throw new BadRequestError('This application already has its Resume and cover letter.');
   }
+  if (worker) {
+    const computer = await prisma.makerComputer.findUnique({ where: { worker }, select: { tokenProfileId: true } });
+    if (computer?.tokenProfileId && bid.profileId && computer.tokenProfileId !== bid.profileId) {
+      throw new ConflictError(
+        "The token in Romva Apply on this computer is for another Profile than this application's. Paste this application's Profile token in Romva Apply, then click Make again.",
+      );
+    }
+    // Never started here: noted, stopped, so its next ask for work takes this one (and only what Make asks for).
+    if (!computer) {
+      await prisma.makerComputer.create({ data: { worker, userId: actor.id, running: false, profileId: bid.profileId, order: 'up' } });
+    }
+  }
   await requestMake(bidId);
-  logger.info({ bidId, letterOnly: hasResume }, 'Auto Make: requested from the table');
+  logger.info({ bidId, letterOnly: hasResume, worker }, 'Auto Make: requested from the table');
   res.json({ requested: true, letterOnly: hasResume });
 });
 

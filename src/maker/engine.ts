@@ -49,7 +49,10 @@ export interface Choices {
   method: 'one' | 'two';
   ai: Site;
   letterAi: Site;
+  /** Each AI's settings (the draft's DeepSeek; older Start windows kept one set per AI). */
   models: Record<string, Record<string, string | boolean>>;
+  /** The Resume's and the cover letter's own settings for their AI: these win over `models`. */
+  parts?: { resume?: Record<string, string | boolean>; letter?: Record<string, string | boolean> };
 }
 
 /** The default (the user's choice, 2026-11-26): one step, ChatGPT · Chat · GPT-6 · High, the letter the same. */
@@ -57,7 +60,12 @@ export const DEFAULT_CHOICES: Choices = {
   method: 'one',
   ai: 'chatgpt',
   letterAi: 'chatgpt',
-  models: { chatgpt: { mode: 'chat', model: 'GPT-6', effort: 'high' }, deepseek: { deepThink: true, search: true } },
+  models: {
+    chatgpt: { mode: 'chat', model: 'GPT-6', effort: 'high' },
+    deepseek: { deepThink: true, search: true },
+    // Romva Apply 3.6.1+ sets these in claude.ai.
+    claude: { model: 'Opus 5.5', thinking: true },
+  },
 };
 
 /** A task given out and not answered for this long is given up (the AI page hung, the browser closed). */
@@ -89,7 +97,14 @@ async function choicesFor(worker: string): Promise<Choices> {
     ai: site(saved.ai, DEFAULT_CHOICES.ai),
     letterAi: site(saved.letterAi, site(saved.ai, DEFAULT_CHOICES.letterAi)),
     models: { ...DEFAULT_CHOICES.models, ...(saved.models ?? {}) },
+    ...(saved.parts && typeof saved.parts === 'object' ? { parts: saved.parts } : {}),
   };
+}
+
+/** The settings a step asks its AI with: the part's own (Resume / cover letter), else that AI's. */
+function settingsFor(choices: Choices, step: Step, site: Site): Record<string, string | boolean> {
+  const own = step === 'resume' ? choices.parts?.resume : step === 'letter' ? choices.parts?.letter : undefined;
+  return { ...(choices.models[site] ?? {}), ...(own ?? {}) };
 }
 
 async function toBrowser(task: {
@@ -140,7 +155,7 @@ async function addTask(
         // Web search for the Resume (ChatGPT turns it on in the chat); every chat is a temporary one.
         webSearch: step === 'resume',
         temporary: true,
-        choice: choices.models[site] ?? {},
+        choice: settingsFor(choices, step, site),
       } as PrismaTypes.InputJsonValue,
     },
   });
@@ -202,6 +217,15 @@ async function prune(): Promise<void> {
  */
 export async function nextTask(actor: Actor, worker: string): Promise<TaskForBrowser | null> {
   await prune().catch(() => undefined);
+  // Whose token this computer's Romva Apply has: the Start windows offer only that Profile. And asking for
+  // work means it is not waiting any more (Romva Apply does not ask while paused): its last "waiting" note
+  // ("The AI tab was closed", a signed-out site) goes, so the website's (!) does not stay.
+  await prisma.makerComputer
+    .updateMany({
+      where: { worker },
+      data: { seenAt: new Date(), tokenProfileId: actor.profileId ?? null, status: PrismaTypes.DbNull },
+    })
+    .catch(() => undefined);
   // Given out too long ago: the page hung or the browser was closed.
   const stale = await prisma.makerTask.findMany({
     where: { worker, status: 'taken', takenAt: { lt: new Date(Date.now() - TASK_TIMEOUT_MS) } },

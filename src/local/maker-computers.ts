@@ -7,6 +7,7 @@ import { ForbiddenError } from '../http/errors.js';
 import { validate, type ValidatedRequest } from '../http/validate.js';
 import { logger } from '../logger.js';
 import { prisma } from '../prisma.js';
+import { assertProfileAccess } from '../profiles/profile-prompts.service.js';
 import type { ComputerChoice } from './auto-make-queue.js';
 import { setSwitches } from './auto-make-state.js';
 
@@ -17,6 +18,7 @@ import { setSwitches } from './auto-make-state.js';
  * computers at once; the queue never hands two of them the same application.
  *
  *   GET  /api/auto-make/computers            mine (an admin: everyone's)
+ *                                            (tokenProfileId: the Profile of the token in its Romva Apply)
  *   PUT  /api/auto-make/computers/:worker    Start / Stop on that computer, with its choices
  *   POST /api/auto-make/stop-all             an admin: every computer stops (and the old switch)
  */
@@ -30,6 +32,13 @@ const ChoicesSchema = z.object({
   draftAi: z.literal('deepseek').optional(),
   letterAi: z.enum(['chatgpt', 'deepseek', 'claude', 'gemini']),
   models: z.record(z.string(), z.record(z.string(), z.union([z.string(), z.boolean()]))).optional(),
+  // The Start window's two lines: the Resume's and the cover letter's own settings for their AI.
+  parts: z
+    .object({
+      resume: z.record(z.string(), z.union([z.string(), z.boolean()])).optional(),
+      letter: z.record(z.string(), z.union([z.string(), z.boolean()])).optional(),
+    })
+    .optional(),
 });
 
 const ComputerSchema = z.object({
@@ -56,7 +65,12 @@ function shown(row: Awaited<ReturnType<typeof prisma.makerComputer.findMany>>[nu
 makerComputersRouter.get('/computers', async (req, res) => {
   const actor = currentActor(req);
   const rows = await prisma.makerComputer.findMany({
-    where: isAdmin(actor) ? {} : { userId: actor.id },
+    // A Profile token (Romva Apply's dashboard) also sees the computer its own Romva Apply is: the token's Profile.
+    where: isAdmin(actor)
+      ? {}
+      : actor.profileId
+        ? { OR: [{ userId: actor.id }, { tokenProfileId: actor.profileId }] }
+        : { userId: actor.id },
     orderBy: { worker: 'asc' },
   });
   res.json(rows.map(shown));
@@ -69,19 +83,36 @@ makerComputersRouter.put(
     const actor = currentActor(req);
     const { worker } = (req as ValidatedRequest<unknown, z.infer<typeof WorkerParams>>).valid.params;
     const body = (req as ValidatedRequest<ComputerInput>).valid.body;
-    const existing = await prisma.makerComputer.findUnique({ where: { worker }, select: { userId: true, running: true } });
-    if (existing && existing.userId !== actor.id && !isAdmin(actor)) {
+    const existing = await prisma.makerComputer.findUnique({
+      where: { worker },
+      select: { userId: true, running: true, tokenProfileId: true },
+    });
+    // Who started it, an admin, or that computer's own Romva Apply (its token's Profile).
+    const ownToken = Boolean(actor.profileId) && existing?.tokenProfileId === actor.profileId;
+    if (existing && existing.userId !== actor.id && !isAdmin(actor) && !ownToken) {
       throw new ForbiddenError('This computer\'s Resume maker was started by someone else.');
     }
-    // A Profile token's computer works on that Profile, whatever was sent.
-    const profileId = actor.profileId ?? body.profileId ?? null;
+    // A Profile token's computer works on that Profile, whatever was sent: the token signing this
+    // request, else the one its Romva Apply last asked for work with.
+    const profileId = actor.profileId ?? existing?.tokenProfileId ?? body.profileId ?? null;
+    // Start only for a Profile the signed-in account may use too (the token's must be the account's).
+    if (body.running && profileId) {
+      try {
+        await assertProfileAccess(actor, profileId);
+      } catch {
+        throw new ForbiddenError(
+          'The token in Romva Apply on this computer is for a Profile your account can\'t use. Paste the token of one of your Profiles there.',
+        );
+      }
+    }
+    // A start No. counts in one Profile's numbers only: dropped when another Profile was sent.
+    const keepsStart = profileId !== null && (body.profileId == null || body.profileId === profileId);
     const data = {
       userId: actor.id,
       running: body.running,
       profileId,
       order: body.order,
-      // A start No. counts in one Profile's numbers only.
-      startFrom: profileId ? (body.startFrom ?? null) : null,
+      startFrom: keepsStart ? (body.startFrom ?? null) : null,
       ...(body.choices ? { choices: body.choices as PrismaTypes.InputJsonValue } : {}),
       ...(body.running && !existing?.running ? { startedAt: new Date() } : {}),
     };

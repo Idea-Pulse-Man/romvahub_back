@@ -1,15 +1,15 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { currentActor, type Actor } from '../auth/actor.js';
+import { currentActor, isAdmin, type Actor } from '../auth/actor.js';
 import { requireAuth } from '../auth/require-auth.js';
 import { assertBidAccess, bidAccessScope } from '../bids/bids.service.js';
 import { Prisma as PrismaTypes } from '../generated/prisma/client.js';
-import { BadRequestError } from '../http/errors.js';
+import { BadRequestError, ForbiddenError } from '../http/errors.js';
 import { validate, type ValidatedRequest } from '../http/validate.js';
-import { cancelMakeRequest, requestMake } from '../local/auto-make-queue.js';
+import { cancelMakeRequest, cancelRemakes, requestMake } from '../local/auto-make-queue.js';
 import { logger } from '../logger.js';
 import { prisma } from '../prisma.js';
-import { acceptBid, checkAll, checkBid, HAS_RESUME } from './resume-check.js';
+import { acceptBid, checkAll, checkBid, HAS_RESUME, loadIgnore, saveIgnore } from './resume-check.js';
 
 /**
  * The Resume check and Remake, for the desktop app's Resume Maker page and
@@ -22,6 +22,9 @@ import { acceptBid, checkAll, checkBid, HAS_RESUME } from './resume-check.js';
  *   POST   /api/resume-check/bids/:id/accept           "Looks fine": passed from now on (until it changes)
  *   POST   /api/resume-check/remake   { ids? | flagged: true, profileId? }
  *   DELETE /api/resume-check/remake/:id                take a remake back
+ *   DELETE /api/resume-check/remake?profileId          Stop: take back every remake in reach
+ *   GET    /api/resume-check/settings                  the ignore list
+ *   PUT    /api/resume-check/settings { ignore }       save it (admins)
  */
 export const resumeCheckRouter: Router = Router();
 resumeCheckRouter.use(requireAuth);
@@ -36,7 +39,10 @@ const RemakeSchema = z
   })
   .refine((v) => (v.ids?.length ?? 0) > 0 || v.flagged === true, { message: 'Send `ids`, or `flagged: true`.' });
 
+const SettingsSchema = z.object({ ignore: z.array(z.string().max(500)).max(500) });
+
 type ProfileQuery = z.infer<typeof ProfileQuerySchema>;
+type SettingsBody = z.infer<typeof SettingsSchema>;
 type IdParams = z.infer<typeof IdParamsSchema>;
 type RemakeBody = z.infer<typeof RemakeSchema>;
 
@@ -53,10 +59,12 @@ resumeCheckRouter.get('/summary', validate({ query: ProfileQuerySchema }), async
   const actor = currentActor(req);
   const { profileId } = (req as ValidatedRequest<unknown, unknown, ProfileQuery>).valid.query;
   const where = DRAFTS_WITH_RESUME(scope(actor, profileId));
-  const [ok, flagged, unchecked, last, rows] = await Promise.all([
+  const [ok, flagged, unchecked, remaking, last, rows] = await Promise.all([
     prisma.bid.count({ where: { AND: [where, { resumeCheckStatus: 'ok' }] } }),
     prisma.bid.count({ where: { AND: [where, { resumeCheckStatus: 'flagged' }] } }),
     prisma.bid.count({ where: { AND: [where, { resumeCheckStatus: null }] } }),
+    // Every remake waiting in reach (a flagged one or not): what Stop takes back.
+    prisma.bid.count({ where: { AND: [scope(actor, profileId), { autoMakeClaim: { remake: true } }] } }),
     prisma.bid.aggregate({ where, _max: { resumeCheckedAt: true } }),
     prisma.bid.findMany({
       where: { AND: [where, { resumeCheckStatus: 'flagged' }] },
@@ -80,6 +88,7 @@ resumeCheckRouter.get('/summary', validate({ query: ProfileQuerySchema }), async
     flagged,
     unchecked,
     total: ok + flagged + unchecked,
+    remaking,
     lastCheckedAt: last._max.resumeCheckedAt?.toISOString() ?? null,
     items: rows.map((row) => ({
       id: row.id,
@@ -150,4 +159,24 @@ resumeCheckRouter.delete('/remake/:id', validate({ params: IdParamsSchema }), as
   await assertBidAccess(actor, id);
   await cancelMakeRequest(id);
   res.json({ remakeRequested: false });
+});
+
+resumeCheckRouter.delete('/remake', validate({ query: ProfileQuerySchema }), async (req, res) => {
+  const actor = currentActor(req);
+  const { profileId } = (req as ValidatedRequest<unknown, unknown, ProfileQuery>).valid.query;
+  const stopped = await cancelRemakes(scope(actor, profileId));
+  logger.info({ stopped, profileId }, 'Resume check: remakes stopped');
+  res.json({ stopped });
+});
+
+resumeCheckRouter.get('/settings', async (req, res) => {
+  const actor = currentActor(req);
+  res.json({ ignore: await loadIgnore(), canEdit: isAdmin(actor) && !actor.profileId });
+});
+
+resumeCheckRouter.put('/settings', validate({ body: SettingsSchema }), async (req, res) => {
+  const actor = currentActor(req);
+  if (!isAdmin(actor) || actor.profileId) throw new ForbiddenError('Only an admin may change the Resume check’s ignore list.');
+  const { ignore } = (req as ValidatedRequest<SettingsBody>).valid.body;
+  res.json({ ignore: await saveIgnore(ignore) });
 });

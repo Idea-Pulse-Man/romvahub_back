@@ -211,6 +211,12 @@ export interface Bid {
    */
   hasCoverLetter?: boolean;
   /**
+   * When "Backup and remove" (Super Admin, Storage page) saved this
+   * application's job description, Resume, cover letter and application chat
+   * to a backup file and removed them. Absent for the rest.
+   */
+  backedUpAt?: string;
+  /**
    * "Make" was clicked on this application: the automatic maker makes its
    * missing Resume and cover letter (or just the letter) next, before every
    * other waiting one. Absent once it is made, or when the attempt failed.

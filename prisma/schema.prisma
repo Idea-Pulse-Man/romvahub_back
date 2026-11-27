@@ -318,6 +318,35 @@ model Bid {
   resumeDocument Json?
 
   /**
+   * The Resume maker's answer: the AI's Resume JSON as it was taken (Maker
+   * JSON, or the app's structured shape), which the Word and PDF files are
+   * built from. The files are not kept in the database: they are copies in the
+   * Resume folder on the server (`src/resume/store`), built again from this
+   * whenever one is missing — so moving the server needs the database only.
+   *
+   * Null for a Resume stored before this (`resumeFiles`, `resumeDocument`) and
+   * for an application with no Resume.
+   */
+  resumeAnswer Json?
+
+  /**
+   * What `resumeAnswer` was built with, so the same Resume can be built again:
+   * `{ kind, templateId, templateSha256, name, fallbackCompanies, stem }`. The
+   * template itself is kept by its hash in `resume_template_versions`, so a
+   * template uploaded again later never changes a Resume already made.
+   */
+  resumeBuild Json?
+
+  /// An old Resume that could not be turned into JSON: its Word and PDF files are
+  /// in the Resume folder's `kept` folder instead (`yarn resumes:to-json`).
+  resumeKept Boolean @default(false)
+
+  /// "Backup and remove" (Super Admin, Storage page): when this application's job
+  /// description, Resume, cover letter and application chat were saved to a
+  /// backup file and removed from the database. Company, role and status stay.
+  backedUpAt DateTime?
+
+  /**
    * The cover letter written for this application, as the JSON its template
    * renders — the same trade `resumeDocument` makes, and for the same reason:
    * storing the content rather than a file is what lets one application be
@@ -743,6 +772,130 @@ model Settings {
   updatedAt DateTime @updatedAt
 
   @@map("settings")
+}
+
+/// Every version of a Resume template that a Resume was made with, by the hash
+/// of its bytes. A template uploaded again under the same name replaces the
+/// old one in `resume_templates`, so an old Resume is built again from the
+/// version it was made with, kept here. Written once, never changed.
+model ResumeTemplateVersion {
+  /// SHA-256 of `data`, in hex.
+  sha256     String   @id
+  /// The template's name when this version was used, e.g. "Jonathan_Bai_Template.docx".
+  templateId String
+  data       Bytes
+  createdAt  DateTime @default(now())
+
+  @@map("resume_template_versions")
+}
+
+/// Settings for the whole server (one row, `id = 1`), set by an admin.
+model ServerSettings {
+  id Int @id @default(1)
+
+  /// The Resume folder: where the server keeps the Resume and cover letter
+  /// files (Word and PDF), as an absolute folder on the server. Null: the
+  /// RESUME_FOLDER environment variable, else `files` next to the backend
+  /// folder (C:\romva\files on the VPS).
+  resumeFolder String?
+
+  updatedAt DateTime @updatedAt
+
+  @@map("server_settings")
+}
+
+/// One "Backup and remove" from the Storage page (Super Admin): the backup file
+/// made for these applications, and when their job description, Resume, cover
+/// letter and application chat were removed from the database — or put back.
+model ContentBackup {
+  id          String   @id @default(uuid()) @db.Uuid
+  createdById String   @db.Uuid
+  /// The choices it was made from: { from, to, statuses, profileId }.
+  filter      Json
+  bidIds      String[] @db.Uuid
+  /// The backup file's size in bytes.
+  size        Int
+  createdAt   DateTime @default(now())
+  removedAt   DateTime?
+  restoredAt  DateTime?
+
+  @@map("content_backups")
+}
+
+/// One computer's Resume maker, started there with Start resume (the Start
+/// window): which Profile it makes Resumes for, in which order, from which
+/// No., and with which AIs. Keyed by the name the computer claims with
+/// ("agent · DESKTOP-1"), so one user can run it on several computers at once
+/// — the queue never gives two of them the same application.
+model MakerComputer {
+  worker    String    @id
+  /// Who started it there.
+  userId    String    @db.Uuid
+  running   Boolean   @default(false)
+  /// The one Profile it makes Resumes for (null: every Profile the user has).
+  profileId String?   @db.Uuid
+  /// "up": from the start No. (else the lowest) up; "down": from it (else the highest) down.
+  order     String    @default("up")
+  /// The No. to start from, in that Profile; past the end it carries on with what is left.
+  startFrom Int?
+  /// The AI choices: { method, ai, draftAi, letterAi, models }.
+  choices   Json?
+  startedAt DateTime?
+  /// Its last ask for work.
+  seenAt    DateTime?
+  /// What its browser last reported: { sites: { chatgpt: "in" | "out" | "unknown", ... }, note, at }.
+  status    Json?
+  updatedAt DateTime  @updatedAt
+
+  @@map("maker_computers")
+}
+
+/// One question the make engine (src/maker/engine.ts) gives a computer's browser
+/// (the Romva Apply extension): "ask this AI this" - and its answer. The engine
+/// takes each application through its steps - the draft (two steps), the Resume
+/// (asked again once if it is incomplete or a draft), the cover letter - one
+/// task at a time. Kept 7 days.
+model MakerTask {
+  id        String    @id @default(uuid()) @db.Uuid
+  /// The computer it is for ("chrome · DESKTOP-1").
+  worker    String
+  /// Who that computer works as (its Profile token's or account's user).
+  userId    String    @db.Uuid
+  bidId     String    @db.Uuid
+  /// "draft" | "resume" | "letter"
+  step      String
+  /// "chatgpt" | "deepseek" | "claude" | "gemini"
+  site      String
+  message   String
+  /// For the browser: { webSearch, temporary, choice } (the AI's mode/model/effort or switches).
+  options   Json?
+  /// What the engine carries to the next step: { draft }.
+  context   Json?
+  attempt   Int       @default(1)
+  /// "waiting" | "taken" | "done" | "failed"
+  status    String    @default("waiting")
+  answer    String?
+  error     String?
+  createdAt DateTime  @default(now())
+  takenAt   DateTime?
+  doneAt    DateTime?
+
+  @@index([worker, status])
+  @@index([createdAt])
+  @@map("maker_tasks")
+}
+
+/// The Resume check's own ignore list (one row, `id = 1`), set on the desktop
+/// app's Resume Maker page: a placeholder, word or reason that has one of these
+/// words or phrases is not flagged (a company name like "C1", a bracketed
+/// "[Remote]" the job really has, "never names" to skip that rule).
+model ResumeCheckSettings {
+  id     Int      @id @default(1)
+  ignore String[] @default([])
+
+  updatedAt DateTime @updatedAt
+
+  @@map("resume_check_settings")
 }
 
 /// The automatic Resume maker's switch and heartbeat. One row (`id = 1`).

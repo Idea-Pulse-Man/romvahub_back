@@ -1,5 +1,6 @@
 import { Prisma as PrismaTypes } from '../generated/prisma/client.js';
 import { prisma } from '../prisma.js';
+import { HAS_MADE_RESUME, NO_RESUME } from '../resume/store/resume-store.js';
 
 /**
  * The automatic Resume maker's queue, shared by every worker on every
@@ -37,10 +38,21 @@ const NOW_UTC = PrismaTypes.sql`(now() at time zone 'utc')`;
  */
 export type ClaimKind = 'resume' | 'letter' | 'any';
 
-/** Down: highest number first, among those filed at `from` or before (all, when null). */
+/**
+ * Down: highest number first, among those filed at `from` or before (all, when null).
+ * `startFrom`: a computer's start No. (the Start window) — from it up, or from it down.
+ */
 export interface ClaimOrder {
   down: boolean;
   from: Date | null;
+  startFrom?: number | null;
+}
+
+/** A computer's own choices from its Start window (`maker_computers`). */
+export interface ComputerChoice {
+  profileId: string | null;
+  down: boolean;
+  startFrom: number | null;
 }
 
 async function currentOrder(): Promise<ClaimOrder> {
@@ -50,13 +62,10 @@ async function currentOrder(): Promise<ClaimOrder> {
 
 /** No Resume yet — or "Remake" asked for one again (the old one stays until the new one is saved). */
 const NEEDS_RESUME: PrismaTypes.BidWhereInput = {
-  OR: [
-    { resumeDocument: { equals: PrismaTypes.AnyNull }, resumeFiles: { none: {} } },
-    { autoMakeClaim: { remake: true } },
-  ],
+  OR: [NO_RESUME, { autoMakeClaim: { remake: true } }],
 };
 const NEEDS_LETTER: PrismaTypes.BidWhereInput = {
-  resumeFiles: { some: {} },
+  AND: [HAS_MADE_RESUME],
   coverLetterDocument: { equals: PrismaTypes.AnyNull },
   // A remake makes the Resume first, then its letter.
   NOT: [{ autoMakeClaim: { remake: true } }],
@@ -106,6 +115,9 @@ async function waiting(
         },
         kind === 'resume' ? NEEDS_RESUME : kind === 'letter' ? NEEDS_LETTER : { OR: [NEEDS_RESUME, NEEDS_LETTER] },
         ...(!requested && order.down && order.from ? [{ createdAt: { lte: order.from } }] : []),
+        ...(!requested && order.startFrom != null
+          ? [{ number: order.down ? { lte: order.startFrom } : { gte: order.startFrom } }]
+          : []),
       ],
     },
     orderBy: requested
@@ -121,13 +133,15 @@ async function waiting(
       userId: true,
       user: { select: { role: true } },
       resumeFiles: { select: { id: true }, take: 1 },
+      resumeAnswer: true,
+      resumeKept: true,
       autoMakeClaim: { select: { remake: true } },
     },
   });
-  return rows.map(({ resumeFiles, autoMakeClaim, ...row }) => ({
+  return rows.map(({ resumeFiles, resumeAnswer, resumeKept, autoMakeClaim, ...row }) => ({
     ...row,
     remake: Boolean(autoMakeClaim?.remake),
-    letterOnly: resumeFiles.length > 0 && !autoMakeClaim?.remake,
+    letterOnly: (resumeAnswer !== null || resumeFiles.length > 0 || resumeKept) && !autoMakeClaim?.remake,
   }));
 }
 
@@ -144,10 +158,24 @@ export type ClaimedApplication = Awaited<ReturnType<typeof waiting>>[number];
 export async function claimNext(
   scope: PrismaTypes.BidWhereInput,
   worker: string,
-  { kind = 'resume', requestedOnly = false }: { kind?: ClaimKind; requestedOnly?: boolean } = {},
+  {
+    kind = 'resume',
+    requestedOnly = false,
+    computer = null,
+  }: { kind?: ClaimKind; requestedOnly?: boolean; computer?: ComputerChoice | null } = {},
 ): Promise<ClaimedApplication | null> {
+  // A computer started for one Profile takes only that Profile's applications.
+  if (computer?.profileId) scope = { AND: [scope, { profileId: computer.profileId }] };
   const candidates = await waiting(scope, 5, kind, { requested: true });
-  if (!requestedOnly) {
+  if (!requestedOnly && computer) {
+    // Its own order: from its start No. up (or down); past the end, on with whatever is left.
+    const order: ClaimOrder = { down: computer.down, from: null, startFrom: computer.startFrom };
+    let next = await waiting(scope, 5, kind, { order });
+    if (next.length === 0 && computer.startFrom != null) {
+      next = await waiting(scope, 5, kind, { order: { down: computer.down, from: null } });
+    }
+    candidates.push(...next);
+  } else if (!requestedOnly) {
     const order = await currentOrder();
     let next = await waiting(scope, 5, kind, { order });
     if (order.down && order.from && next.length === 0) {
@@ -289,6 +317,19 @@ export async function requestMake(bidId: string, { remake = false }: { remake?: 
   const reset = { requestedAt: new Date(), attempts: 0, failedAt: null, lastError: null, ...(remake ? { remake: true } : {}) };
   await prisma.autoMakeClaim.upsert({ where: { bidId }, create: { bidId, ...reset }, update: reset });
   await touchBid(bidId);
+}
+
+/**
+ * Stop for the remakes: every remake asked for in `scope` taken back (the old
+ * Resumes stay). One a worker is making right now keeps its holder, and is
+ * saved if the worker finishes it. Returns how many were taken back.
+ */
+export async function cancelRemakes(scope: PrismaTypes.BidWhereInput): Promise<number> {
+  const { count } = await prisma.autoMakeClaim.updateMany({
+    where: { remake: true, bid: scope },
+    data: { requestedAt: null, remake: false },
+  });
+  return count;
 }
 
 /** The request taken back: the application waits its normal turn again. */

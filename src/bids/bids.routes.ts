@@ -9,13 +9,14 @@ import { stepsRouter } from './steps.routes.js';
 import { autoMakeNewApplication } from '../local/chatgpt-resume.js';
 import { companySizeFromNotes, isLargeCompany } from './company-size.js';
 import * as resumeService from '../resume/resume.service.js';
-import * as coverLetterService from '../cover-letter/cover-letter.service.js';
 import { BadRequestError, NotFoundError } from '../http/errors.js';
 import { MAX_PHOTO_BYTES, PHOTO_CONTENT_TYPES } from '../storage/s3.client.js';
 import { ResumePayloadSchema } from '../resume/resume.schemas.js';
 import { CoverLetterPayloadSchema } from '../cover-letter/cover-letter.schemas.js';
 import type { ResumeFileFormat } from '../domain/types.js';
 import { checkBidQuietly } from '../resume/resume-check.js';
+import { coverLetterFile, inBackupError, resumeFile } from '../resume/store/resume-store.js';
+import { prisma } from '../prisma.js';
 import {
   BidIdParamsSchema,
   BidResumeQuerySchema,
@@ -116,9 +117,10 @@ bidsRouter.get(
     const { format } = (req as ValidatedRequest<unknown, unknown, BidResumeQuery>).valid.query;
     const actor = currentActor(req);
 
-    // A file synced up from the Resume Builder's folder is the Resume that
-    // was actually sent, so it is served as it is — no template, no render.
-    const synced = await bidsService.getResumeFile(actor, id, format);
+    // The maker's Resume (its copy in the Resume folder, else built from its
+    // JSON), or an old stored file: served as it is — the Resume that was sent.
+    await bidsService.assertBidAccess(actor, id);
+    const synced = await resumeFile(id, format);
     if (synced) {
       res.setHeader('Content-Type', synced.contentType);
       res.setHeader('Content-Length', synced.data.byteLength);
@@ -249,6 +251,8 @@ bidsRouter.get(
     const bid = await bidsService.getBid(actor, id);
     const stored = await bidsService.getBidCoverLetter(actor, id);
     if (stored === null) {
+      const row = await prisma.bid.findUnique({ where: { id }, select: { backedUpAt: true } });
+      if (row?.backedUpAt) throw inBackupError(row.backedUpAt, 'cover letter');
       throw new NotFoundError('No cover letter has been written for this application.');
     }
 
@@ -263,19 +267,20 @@ bidsRouter.get(
       );
     }
 
-    const { file, contentType, fileName } = await coverLetterService.renderCoverLetter(
-      bid.candidate?.userId ?? actor.id,
-      { document: parsed.data, format },
-      // The bid's date, so a letter downloaded months later still carries the
-      // day the application was made rather than the day it was printed — and
-      // its Profile's name and contact line.
-      { date: bid.bidDate, profileId: bid.candidate?.profileId },
+    // Its copy in the Resume folder, else rendered and kept there. The bid's
+    // date, so a letter downloaded months later still carries the day the
+    // application was made rather than the day it was printed — and its
+    // Profile's name and contact line.
+    const letter = await coverLetterFile(
+      { bidId: id, ownerUserId: bid.candidate?.userId ?? actor.id, bidDate: bid.bidDate, profileId: bid.candidate?.profileId },
+      parsed.data,
+      format,
     );
 
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Length', file.byteLength);
-    res.setHeader('Content-Disposition', contentDisposition('attachment', fileName));
-    res.send(file);
+    res.setHeader('Content-Type', letter.contentType);
+    res.setHeader('Content-Length', letter.data.byteLength);
+    res.setHeader('Content-Disposition', contentDisposition('attachment', letter.name));
+    res.send(letter.data);
   },
 );
 

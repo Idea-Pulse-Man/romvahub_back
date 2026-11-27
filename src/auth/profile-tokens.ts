@@ -113,6 +113,15 @@ const TOKEN_ROUTES: Array<{ method: string; path: RegExp }> = [
   { method: 'POST', path: /^\/api\/auto-make\/(claim|heartbeat|release-held)$/ },
   { method: 'POST', path: new RegExp(`^/api/auto-make/jobs/${UUID}/(check-resume|resume|cover-letter|release|request)$`, 'i') },
   { method: 'DELETE', path: new RegExp(`^/api/auto-make/jobs/${UUID}/request$`, 'i') },
+  // The Start window (this computer's choices) and "Make files" — for the token's own Profile only.
+  { method: 'GET', path: /^\/api\/auto-make\/computers$/ },
+  { method: 'PUT', path: /^\/api\/auto-make\/computers\/[^/]+$/ },
+  { method: 'POST', path: /^\/api\/resume-files\/make$/ },
+  { method: 'GET', path: new RegExp(`^/api/resume-files/make/${UUID}$`, 'i') },
+  // The make engine's links for the browser (the Romva Apply extension).
+  { method: 'GET', path: /^\/api\/maker\/next$/ },
+  { method: 'POST', path: /^\/api\/maker\/status$/ },
+  { method: 'POST', path: new RegExp(`^/api/maker/tasks/${UUID}/(answer|failed|heartbeat)$`, 'i') },
 ];
 
 const PROFILE_PATH = new RegExp(`^/api/profiles/(${UUID})(/|$)`, 'i');

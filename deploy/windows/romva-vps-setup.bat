@@ -64,12 +64,18 @@ Write-Host ''
 $Kit = $null
 if ($f) {
   $candidate = Join-Path (Split-Path -Parent $f) 'romva-move-kit'
-  if (Test-Path "$candidate\romva.dump") { $Kit = $candidate }
+  if ((Test-Path "$candidate\romva.dump") -or (Test-Path "$candidate\backend.env")) { $Kit = $candidate }
 }
 if ($Kit) {
   Write-Host "  Move kit found: $Kit" -ForegroundColor Green
   if ((Test-Path "$Kit\SECRETS.txt") -and -not (Test-Path "$Root\SECRETS.txt")) { Copy-Item "$Kit\SECRETS.txt" "$Root\SECRETS.txt" }
 }
+# The database is in Supabase (since romva-move-to-supabase.bat): nothing to create or copy here,
+# and the database link in the settings is kept as it is.
+$SupabasePattern = '^DATABASE_URL=.*supabase\.com'
+$OnSupabase = ((Test-Path "$Root\backend\.env") -and (Select-String -Path "$Root\backend\.env" -Pattern $SupabasePattern -Quiet)) -or
+  ($Kit -and (Test-Path "$Kit\backend.env") -and (Select-String -Path "$Kit\backend.env" -Pattern $SupabasePattern -Quiet))
+if ($OnSupabase) { Write-Host '  The database is in Supabase: it is used as it is.' -ForegroundColor Green }
 
 # ---------------------------------------------------------------- secrets
 $SecretsFile = "$Root\SECRETS.txt"
@@ -133,6 +139,22 @@ if ($Chrome) { Ok "Chrome found: $Chrome" }
 if (-not $Chrome) { Warn 'Chrome was not found: PDF resumes need it. Install Google Chrome later and run this file again.' }
 Ok "Node $(node --version), PostgreSQL in $PgBin"
 
+if ($OnSupabase) {
+  # Supabase lets only allowed IP addresses in: check this VPS is one of them before going on.
+  $envSource = if (Test-Path "$Root\backend\.env") { "$Root\backend\.env" } else { "$Kit\backend.env" }
+  $supa = ((Get-Content $envSource | Where-Object { $_ -match '^DATABASE_URL=' }) -replace '^DATABASE_URL=', '')
+  $supaBase, $supaQuery = $supa.Split('?', 2)
+  $supaKeep = @(); if ($supaQuery) { $supaKeep = @($supaQuery.Split('&') | Where-Object { $_ -and $_ -notmatch '^(uselibpqcompat|pgbouncer|connection_limit|pool_timeout|schema)=' }) }
+  $supaTool = if ($supaKeep.Count) { $supaBase + '?' + ($supaKeep -join '&') } else { $supaBase }
+  $one = ((& "$PgBin\psql.exe" $supaTool -tAc 'select 1' 2>$null) -join '').Trim()
+  if ($one -ne '1') {
+    $myIp = ''; try { $myIp = (Invoke-RestMethod 'https://api.ipify.org' -TimeoutSec 10).ToString().Trim() } catch { }
+    Fail "This VPS cannot reach the Supabase database. In Supabase -> Project Settings -> Database -> Network Restrictions, allow this VPS's IP address $myIp, then run this file again."
+  }
+  Ok 'This VPS can reach the Supabase database.'
+}
+
+if (-not $OnSupabase) {
 # ---------------------------------------------------------------- 2. database
 Say '2/9 Creating the database'
 $env:PGPASSWORD = $S['PG_ADMIN_PASSWORD']
@@ -193,6 +215,10 @@ if ($LASTEXITCODE -eq 0 -and [int]("0" + $count.Trim()) -gt 0) {
   if ([int]("0" + $count.Trim()) -le 0) { Fail 'The copy did not arrive (no applications in the new database).' }
   Ok "Copied: $($count.Trim()) applications. (Red lines above like 'already exists' are harmless.)"
 }
+} else {
+  Say '2-3/9 The database'
+  Ok 'romva uses its Supabase database: nothing to create or copy on this VPS.'
+}
 
 # ---------------------------------------------------------------- 4. code
 Say '4/9 Downloading the code from GitHub'
@@ -251,12 +277,20 @@ if (-not (Test-Path $EnvFile)) {
   Ok 'Settings file written (C:\romva\backend\.env).'
 } else {
   # Kept, but the lines that belong to THIS computer are set again.
-  $here = @{ 'DATABASE_URL' = $DbUrl; 'FRONTEND_DIR' = "$Root\frontend\dist\public"; 'CORS_ORIGIN' = "https://www.$Domain" }
+  $here = @{ 'FRONTEND_DIR' = "$Root\frontend\dist\public"; 'CORS_ORIGIN' = "https://www.$Domain" }
+  if (-not $OnSupabase) { $here['DATABASE_URL'] = $DbUrl }   # on Supabase the database link stays as it is
   if ($Chrome) { $here['PUPPETEER_EXECUTABLE_PATH'] = $Chrome }
-  $lines = @(Get-Content $EnvFile | Where-Object { $_ -notmatch '^(DATABASE_URL|DIRECT_URL|FRONTEND_DIR|CORS_ORIGIN|PUPPETEER_EXECUTABLE_PATH)=' })
+  $drop = if ($OnSupabase) { '^(FRONTEND_DIR|CORS_ORIGIN|PUPPETEER_EXECUTABLE_PATH)=' } else { '^(DATABASE_URL|DIRECT_URL|FRONTEND_DIR|CORS_ORIGIN|PUPPETEER_EXECUTABLE_PATH)=' }
+  $lines = @(Get-Content $EnvFile | Where-Object { $_ -notmatch $drop })
   $lines += $here.Keys | ForEach-Object { "$_=$($here[$_])" }
   Set-Content -Path $EnvFile -Value $lines -Encoding ascii
   Ok 'Settings file kept (database address and folders updated for this computer).'
+}
+# Old Resumes kept as files (they could not be turned into JSON) come along in the kit.
+if ($Kit -and (Test-Path "$Kit\kept") -and -not (Test-Path "$Root\files\kept")) {
+  New-Item -ItemType Directory -Force -Path "$Root\files" | Out-Null
+  Copy-Item "$Kit\kept" "$Root\files\kept" -Recurse -Force
+  Ok 'Kept old Resumes copied to C:\romva\files\kept.'
 }
 
 Push-Location "$Root\backend"
@@ -310,6 +344,16 @@ foreach ($port in 80, 443) {
 Ok 'HTTPS is on. (The certificate arrives by itself once the domain points to this VPS.)'
 
 # ---------------------------------------------------------------- 8. backup
+if ($OnSupabase) {
+Say '8/9 Backups (full every Sunday, only the changes on the other nights)'
+$backup = (Get-Content "$Root\backend\deploy\windows\backup.ps1" -Raw).Replace('__NODE__', (Get-Command node).Source)
+Set-Content -Path "$Root\backup.ps1" -Value $backup -Encoding ascii
+icacls "$Root\backup.ps1" /inheritance:r /grant:r 'Administrators:F' 'SYSTEM:F' | Out-Null
+Register-ScheduledTask -TaskName 'romva backup' -User 'SYSTEM' -RunLevel Highest -Force `
+  -Trigger (New-ScheduledTaskTrigger -Daily -At 3am) `
+  -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File $Root\backup.ps1") | Out-Null
+Ok 'Backups go to C:\romva\backups (full every Sunday, the changes every other night).'
+} else {
 Say '8/9 Nightly backup (3 AM, keeps 14 days)'
 $backup = @(
   "& '$PgBin\pg_dump.exe' '$DbUrl' -Fc -f ('$Root\backups\romva-' + (Get-Date -Format yyyy-MM-dd) + '.dump')",
@@ -321,6 +365,7 @@ Register-ScheduledTask -TaskName 'romva backup' -User 'SYSTEM' -RunLevel Highest
   -Trigger (New-ScheduledTaskTrigger -Daily -At 3am) `
   -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File $Root\backup.ps1") | Out-Null
 Ok 'Backups go to C:\romva\backups every night.'
+}
 
 # ---------------------------------------------------------------- 9. update file
 Say '9/9 Writing C:\romva\update.bat (for later updates)'
@@ -341,6 +386,11 @@ $update = @(
 Set-Content -Path "$Root\update.bat" -Value $update -Encoding ascii
 
 # The move kit: everything needed to move romva to another VPS (or keep a copy on your PC).
+if ($OnSupabase) {
+  # The database is in Supabase: the kit carries the settings, the passwords and the kept Resumes.
+  Copy-Item "$Root\backend\deploy\windows\make-move-kit.ps1" "$Root\make-move-kit.ps1" -Force
+  $kitScript = $null
+} else {
 $kitScript = @(
   "`$kit = '$Root\romva-move-kit'",
   'New-Item -ItemType Directory -Force -Path $kit | Out-Null',
@@ -355,6 +405,7 @@ $kitScript = @(
   'Start-Process explorer.exe $kit'
 )
 Set-Content -Path "$Root\make-move-kit.ps1" -Value $kitScript -Encoding ascii
+}
 icacls "$Root\make-move-kit.ps1" /inheritance:r /grant:r 'Administrators:F' 'SYSTEM:F' | Out-Null
 Set-Content -Path "$Root\make-move-kit.bat" -Encoding ascii -Value @(
   '@echo off',

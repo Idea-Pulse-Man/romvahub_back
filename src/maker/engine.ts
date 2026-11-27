@@ -217,6 +217,10 @@ async function prune(): Promise<void> {
  */
 export async function nextTask(actor: Actor, worker: string): Promise<TaskForBrowser | null> {
   await prune().catch(() => undefined);
+  // Whose token this computer's Romva Apply has: the Start windows offer only that Profile.
+  await prisma.makerComputer
+    .updateMany({ where: { worker }, data: { seenAt: new Date(), tokenProfileId: actor.profileId ?? null } })
+    .catch(() => undefined);
   // Given out too long ago: the page hung or the browser was closed.
   const stale = await prisma.makerTask.findMany({
     where: { worker, status: 'taken', takenAt: { lt: new Date(Date.now() - TASK_TIMEOUT_MS) } },

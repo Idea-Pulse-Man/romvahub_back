@@ -845,6 +845,8 @@ model MakerComputer {
   seenAt    DateTime?
   /// What its browser last reported: { sites: { chatgpt: "in" | "out" | "unknown", ... }, note, at }.
   status    Json?
+  /// The Profile of the token in its Romva Apply, noted at each ask for work: the only Profile it can make.
+  tokenProfileId String? @db.Uuid
   updatedAt DateTime  @updatedAt
 
   @@map("maker_computers")

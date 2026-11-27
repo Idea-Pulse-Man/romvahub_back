@@ -65,7 +65,12 @@ function shown(row: Awaited<ReturnType<typeof prisma.makerComputer.findMany>>[nu
 makerComputersRouter.get('/computers', async (req, res) => {
   const actor = currentActor(req);
   const rows = await prisma.makerComputer.findMany({
-    where: isAdmin(actor) ? {} : { userId: actor.id },
+    // A Profile token (Romva Apply's dashboard) also sees the computer its own Romva Apply is: the token's Profile.
+    where: isAdmin(actor)
+      ? {}
+      : actor.profileId
+        ? { OR: [{ userId: actor.id }, { tokenProfileId: actor.profileId }] }
+        : { userId: actor.id },
     orderBy: { worker: 'asc' },
   });
   res.json(rows.map(shown));
@@ -82,7 +87,9 @@ makerComputersRouter.put(
       where: { worker },
       select: { userId: true, running: true, tokenProfileId: true },
     });
-    if (existing && existing.userId !== actor.id && !isAdmin(actor)) {
+    // Who started it, an admin, or that computer's own Romva Apply (its token's Profile).
+    const ownToken = Boolean(actor.profileId) && existing?.tokenProfileId === actor.profileId;
+    if (existing && existing.userId !== actor.id && !isAdmin(actor) && !ownToken) {
       throw new ForbiddenError('This computer\'s Resume maker was started by someone else.');
     }
     // A Profile token's computer works on that Profile, whatever was sent: the token signing this

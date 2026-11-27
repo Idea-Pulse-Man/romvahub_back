@@ -156,8 +156,13 @@ async function giveUp(bidId: string, worker: string, reason: string, counted: bo
 
 /** The first task of a new application for this computer, or null when there is none to make. */
 async function startNext(actor: Actor, worker: string): Promise<boolean> {
-  const computer = await computerFor(worker);
+  let computer = await computerFor(worker);
   if (!computer) return false; // never started with the Start window: nothing for it
+  // A Profile token works for its own Profile only: that one wins over the Start window's choice
+  // (whose start No. counted in another Profile's numbers).
+  if (actor.profileId && computer.profileId !== actor.profileId) {
+    computer = { ...computer, profileId: actor.profileId, startFrom: null };
+  }
   for (let tries = 0; tries < 3; tries += 1) {
     // At Stop only what someone asked for with "Make" is made.
     const claimed = await claimNext(bidAccessScope(actor), worker, { kind: 'any', requestedOnly: !computer.running, computer });

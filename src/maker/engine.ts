@@ -217,9 +217,14 @@ async function prune(): Promise<void> {
  */
 export async function nextTask(actor: Actor, worker: string): Promise<TaskForBrowser | null> {
   await prune().catch(() => undefined);
-  // Whose token this computer's Romva Apply has: the Start windows offer only that Profile.
+  // Whose token this computer's Romva Apply has: the Start windows offer only that Profile. And asking for
+  // work means it is not waiting any more (Romva Apply does not ask while paused): its last "waiting" note
+  // ("The AI tab was closed", a signed-out site) goes, so the website's (!) does not stay.
   await prisma.makerComputer
-    .updateMany({ where: { worker }, data: { seenAt: new Date(), tokenProfileId: actor.profileId ?? null } })
+    .updateMany({
+      where: { worker },
+      data: { seenAt: new Date(), tokenProfileId: actor.profileId ?? null, status: PrismaTypes.DbNull },
+    })
     .catch(() => undefined);
   // Given out too long ago: the page hung or the browser was closed.
   const stale = await prisma.makerTask.findMany({

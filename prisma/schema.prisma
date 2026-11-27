@@ -843,9 +843,46 @@ model MakerComputer {
   startedAt DateTime?
   /// Its last ask for work.
   seenAt    DateTime?
+  /// What its browser last reported: { sites: { chatgpt: "in" | "out" | "unknown", ... }, note, at }.
+  status    Json?
   updatedAt DateTime  @updatedAt
 
   @@map("maker_computers")
+}
+
+/// One question the make engine (src/maker/engine.ts) gives a computer's browser
+/// (the Romva Apply extension): "ask this AI this" - and its answer. The engine
+/// takes each application through its steps - the draft (two steps), the Resume
+/// (asked again once if it is incomplete or a draft), the cover letter - one
+/// task at a time. Kept 7 days.
+model MakerTask {
+  id        String    @id @default(uuid()) @db.Uuid
+  /// The computer it is for ("chrome · DESKTOP-1").
+  worker    String
+  /// Who that computer works as (its Profile token's or account's user).
+  userId    String    @db.Uuid
+  bidId     String    @db.Uuid
+  /// "draft" | "resume" | "letter"
+  step      String
+  /// "chatgpt" | "deepseek" | "claude" | "gemini"
+  site      String
+  message   String
+  /// For the browser: { webSearch, temporary, choice } (the AI's mode/model/effort or switches).
+  options   Json?
+  /// What the engine carries to the next step: { draft }.
+  context   Json?
+  attempt   Int       @default(1)
+  /// "waiting" | "taken" | "done" | "failed"
+  status    String    @default("waiting")
+  answer    String?
+  error     String?
+  createdAt DateTime  @default(now())
+  takenAt   DateTime?
+  doneAt    DateTime?
+
+  @@index([worker, status])
+  @@index([createdAt])
+  @@map("maker_tasks")
 }
 
 /// The Resume check's own ignore list (one row, `id = 1`), set on the desktop

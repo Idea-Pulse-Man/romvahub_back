@@ -33,6 +33,7 @@ import { autoMakeRouter } from './local/auto-make-state.js';
 import { autoMakeJobsRouter } from './local/auto-make-jobs.routes.js';
 import { autoApplyRouter } from './local/auto-apply.routes.js';
 import { makerComputersRouter } from './local/maker-computers.js';
+import { makerRouter } from './maker/maker.routes.js';
 import { openApiDocument } from './docs/openapi.js';
 import { filesRouter } from './storage/files.routes.js';
 import { resumeCheckRouter } from './resume/resume-check.routes.js';
@@ -121,6 +122,7 @@ export function createApp(): Express {
   api.use('/auto-make', autoMakeJobsRouter);
   api.use('/auto-make', autoApplyRouter);
   api.use('/auto-make', makerComputersRouter);
+  api.use('/maker', makerRouter);
   api.use('/admin/ai', aiConfigRouter);
   api.use('/admin/users', adminUsersRouter);
   api.use('/admin/profiles', adminProfilesRouter);

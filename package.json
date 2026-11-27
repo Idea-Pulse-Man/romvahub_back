@@ -24,6 +24,7 @@
     "proofs:fingerprint": "tsx scripts/fingerprint-proofs.ts",
     "files:to-db": "tsx scripts/move-files-to-db.ts",
     "resumes:to-json": "tsx scripts/resumes-to-json.ts",
+    "resumes:check": "tsx scripts/resumes-check.ts",
     "backup:changes": "tsx scripts/backup-changes.ts",
     "backup:restore": "tsx scripts/restore-backup.ts"
   },

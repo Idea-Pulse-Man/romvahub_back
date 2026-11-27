@@ -87,16 +87,34 @@ function placeholdersFor(json: object, context: { name?: string; fallbackCompani
  */
 export async function resumeAnswerProblems(
   json: object,
-  context: { templateId?: string; name?: string; fallbackCompanies: string[] },
+  context: { templateId?: string; name?: string; fallbackCompanies: string[]; requestedBullets?: Map<number, number> },
 ): Promise<string[]> {
   return problemsForTags(await templateTags(context.templateId), json, context);
 }
 
-/** `resumeAnswerProblems` for a template's tags already read. */
+/**
+ * How many bullet points the prompt asks for, per job: the highest
+ * "Role-Bullet-<job>-<n>" it names (so "Role-Bullet-4-1 … Role-Bullet-4-5" is 5).
+ */
+export function bulletsNamedIn(prompt: string): Map<number, number> {
+  const most = new Map<number, number>();
+  for (const match of prompt.matchAll(/Role-Bullets?-(\d+)-(\d+)/gi)) {
+    const role = Number(match[1]);
+    most.set(role, Math.max(most.get(role) ?? 0, Number(match[2])));
+  }
+  return most;
+}
+
+/**
+ * `resumeAnswerProblems` for a template's tags already read. With
+ * `requestedBullets` (the bullet tags the prompt names), a job the answer
+ * writes must also fill each of its template's bullets the prompt asks for —
+ * not only one.
+ */
 export function problemsForTags(
   tags: string[],
   json: object,
-  context: { name?: string; fallbackCompanies: string[] },
+  context: { name?: string; fallbackCompanies: string[]; requestedBullets?: Map<number, number> },
 ): string[] {
   const placeholders = placeholdersFor(json, context);
   const filled = (tag: string) => (getPlaceholder(placeholders, tag) ?? '').trim().length > 0;
@@ -147,6 +165,16 @@ export function problemsForTags(
     const bulletTags = bullets.get(role) ?? [];
     if (bulletTags.length && !bulletTags.some(filled)) {
       problems.push(`job ${role} has no bullet points (the template's <${bulletTags[0]}>…)`);
+    } else if (context.requestedBullets?.size) {
+      // Each bullet the prompt asks for (up to its highest for this job) and the template has a place for.
+      const most = context.requestedBullets.get(role) ?? 0;
+      const wanted = bulletTags.filter((tag) => Number(ROLE_BULLET.exec(tag)?.[2] ?? 0) <= most);
+      const empty = wanted.filter((tag) => !filled(tag));
+      if (empty.length) {
+        problems.push(
+          `job ${role} has ${wanted.length - empty.length} of the ${wanted.length} bullet points asked for: write ${empty.map((tag) => `"${tag}"`).join(', ')} too`,
+        );
+      }
     }
   }
 

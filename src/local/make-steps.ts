@@ -12,7 +12,7 @@ import { settingsForMake } from '../profiles/profile-prompts.service.js';
 import mammoth from 'mammoth';
 import { prisma } from '../prisma.js';
 import { parseJsonAnswer } from './json-answer.js';
-import { resumeAnswerProblems, resumeRetryMessage } from './resume-answer-check.js';
+import { bulletsNamedIn, resumeAnswerProblems, resumeRetryMessage } from './resume-answer-check.js';
 import { checkBidQuietly } from '../resume/resume-check.js';
 import { applicationFolderName, fileStem } from '../resume/store/names.js';
 import {
@@ -133,12 +133,17 @@ function profileName(job: MakeJob): string {
   return [job.profile.firstName, job.profile.lastName].filter(Boolean).join(' ').trim();
 }
 
-/** What is missing from a parsed Resume answer for this Profile's template (empty: it can be built). */
-function problemsIn(job: MakeJob, json: object): Promise<string[]> {
+/**
+ * What is missing from a parsed Resume answer for this Profile's template (empty: it can be built).
+ * `allBullets`: also each bullet point the prompt asks for (the check before asking again); the
+ * build itself needs only one per job, so a second answer still short of some is built.
+ */
+function problemsIn(job: MakeJob, json: object, { allBullets = false } = {}): Promise<string[]> {
   return resumeAnswerProblems(json, {
     templateId: job.prompts.templateId,
     name: profileName(job) || undefined,
     fallbackCompanies: job.profile.workExperience.map((entry) => entry.company),
+    ...(allBullets ? { requestedBullets: bulletsNamedIn(job.resumeMessage) } : {}),
   });
 }
 
@@ -163,7 +168,7 @@ export async function checkResumeAnswer(job: MakeJob, answer: string): Promise<R
     const problems = [error instanceof Error ? error.message : 'the answer was not valid JSON'];
     return { problems, retryMessage: resumeRetryMessage(job.resumeMessage, problems, null) };
   }
-  const problems = await problemsIn(job, json as object);
+  const problems = await problemsIn(job, json as object, { allBullets: true });
   return problems.length ? { problems, retryMessage: resumeRetryMessage(job.resumeMessage, problems, json) } : { problems };
 }
 

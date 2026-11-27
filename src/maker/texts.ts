@@ -5,6 +5,8 @@
  * every computer gets the same ones from the server.
  */
 
+import { namedSkillGroup } from '../resume/maker/placeholders.js';
+
 /** Two steps, first step: the draft must be JSON only. */
 export const JSON_ONLY = 'Answer with one valid JSON object only: no text before or after it.';
 /** Two steps, the draft's second try. */
@@ -131,7 +133,6 @@ export function withDraftsPointedOut(request: string, marks: string[]): string {
 }
 
 const TAG_NAME = /^\s*Skill-Groups?-\d+\s*$/i;
-const NAMED = /^\s*([^:\n]{2,80}?)\s*:\s*([\s\S]+)$/;
 
 /**
  * Skill groups the AI left named after the template's tag ("Skill-Group-1":
@@ -162,9 +163,10 @@ export function nameSkillGroups(answer: string): { text: string; unnamed: string
   const unnamed: string[] = [];
   const named: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(groups as Record<string, unknown>)) {
-    const split = TAG_NAME.test(name) && typeof value === 'string' ? NAMED.exec(value) : null;
-    if (split && !(split[1]! in named)) {
-      named[split[1]!] = split[2]!.trim();
+    // "Skill-Group-1": "Cloud: AWS", "Skill-Group-1: Cloud": "AWS", "Skill-Group-1": { "Cloud": "AWS" } → "Cloud": "AWS".
+    const own = namedSkillGroup(name, value);
+    if (own.name !== name && !(own.name in named)) {
+      named[own.name] = typeof own.value === 'string' ? own.value.trim() : own.value;
       changed = true;
     } else {
       if (TAG_NAME.test(name) && !(typeof value === 'string' && !value.trim())) unnamed.push(name.trim());

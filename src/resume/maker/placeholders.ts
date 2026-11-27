@@ -271,6 +271,33 @@ function addCoreSkillsPlaceholders(
   setPlaceholder(placeholders, 'core-skills', normalizeNewlines(value));
 }
 
+/** A skill group the AI left under the template's tag name: "Skill-Group-1" or "Skill-Groups-12". */
+const SKILL_GROUP_TAG_ONLY = /^\s*Skill-Groups?-\d+\s*$/i;
+/** The tag name in front of the group's own name: "Skill-Group-1: Cloud", "Skill-Group-2 - Data". */
+const SKILL_GROUP_TAG_PREFIX = /^\s*Skill-Groups?-\d+\s*(?:[:\-–—|]\s*)?/i;
+const NAME_AND_SKILLS = /^\s*([^:\n]{2,80}?)\s*:\s*([\s\S]+)$/;
+
+/**
+ * A skill group's own name and its skills, when the AI wrote the template's
+ * tag name in it: "Skill-Group-1: Cloud": "AWS" → Cloud: AWS; "Skill-Group-1":
+ * "Cloud: AWS" → Cloud: AWS; "Skill-Group-1": { "Cloud": "AWS" } → Cloud: AWS.
+ * Otherwise the key is the name, as it is.
+ */
+export function namedSkillGroup(key: string, value: unknown): { name: string; value: unknown } {
+  const rest = key.replace(SKILL_GROUP_TAG_PREFIX, '').trim();
+  if (rest && rest !== key.trim()) return { name: rest, value };
+  if (SKILL_GROUP_TAG_ONLY.test(key)) {
+    if (typeof value === 'string') {
+      const split = NAME_AND_SKILLS.exec(value);
+      if (split) return { name: split[1]!.trim(), value: split[2]!.trim() };
+    } else if (isPlainObject(value)) {
+      const entries = Object.entries(value).filter(([, inner]) => inner !== null && inner !== undefined);
+      if (entries.length === 1) return { name: entries[0]![0].trim(), value: entries[0]![1] };
+    }
+  }
+  return { name: key, value };
+}
+
 function addDerivedPlaceholders(
   root: Record<string, unknown>,
   placeholders: Record<string, string>,
@@ -287,10 +314,12 @@ function addDerivedPlaceholders(
 
   let index = 1;
   const renderedSkillLines: string[] = [];
-  for (const [key, value] of Object.entries(skillsNode)) {
-    if (value === null || value === undefined) {
+  for (const [rawKey, rawValue] of Object.entries(skillsNode)) {
+    if (rawValue === null || rawValue === undefined) {
       continue;
     }
+    // The group's own name, never the template's tag ("Skill-Group-1: Cloud" → "Cloud").
+    const { name: key, value } = namedSkillGroup(rawKey, rawValue);
     const rendered = renderNode(value);
     if (!rendered.trim()) {
       continue;

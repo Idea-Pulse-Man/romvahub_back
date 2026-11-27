@@ -581,6 +581,14 @@ model Profile {
   resumePrompt      String?
   coverLetterPrompt String?
 
+  /// The Resume in two steps (the Start window's Method "Two steps"): Step 1's
+  /// prompt asks for the information the Resume needs (company, role,
+  /// experience) as JSON; Step 2's writes the Resume from the job and Step 1's
+  /// answer. Both required for two steps (no fallback to `resumePrompt`); one
+  /// step uses `resumePrompt` alone.
+  resumeStep1Prompt String?
+  resumeStep2Prompt String?
+
   /// Jobs the scraper extension does not save for this Profile: a job title
   /// containing any of these roles, or a company whose name contains any of
   /// these names (whole words, any case). Edited in Edit Profile → Avoid.

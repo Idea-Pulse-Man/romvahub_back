@@ -5,7 +5,8 @@ import { requireAuth } from '../auth/require-auth.js';
 import { assertBidAccess, bidAccessScope } from '../bids/bids.service.js';
 import { BadRequestError, ConflictError, NotFoundError } from '../http/errors.js';
 import { prisma } from '../prisma.js';
-import { computerFor } from './maker-computers.js';
+import { computerFor, savedMethod } from './maker-computers.js';
+import { assertReadyToMake } from '../profiles/profile-prompts.service.js';
 import { validate, type ValidatedRequest } from '../http/validate.js';
 import { logger } from '../logger.js';
 import { autoMakeEnabled, reportWorker } from './auto-make-state.js';
@@ -315,6 +316,9 @@ autoMakeJobsRouter.post('/jobs/:bidId/request', validate({ params: BidParamsSche
         "The token in Romva Apply on this computer is for another Profile than this application's. Paste this application's Profile token in Romva Apply, then click Make again.",
       );
     }
+    // The Profile must have the Resume prompts of this computer's method (two steps: Step 1's and Step 2's)
+    // and its template: refused now, with what is missing, rather than failing once the maker takes it.
+    if (bid.profileId) await assertReadyToMake(bid.profileId, (await savedMethod(worker)) || 'one');
     // Never started here: noted, stopped, so its next ask for work takes this one (and only what Make asks for).
     if (!computer) {
       await prisma.makerComputer.create({ data: { worker, userId: actor.id, running: false, profileId: bid.profileId, order: 'up' } });

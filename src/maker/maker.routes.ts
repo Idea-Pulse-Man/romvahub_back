@@ -8,7 +8,8 @@ import { answerTask, failTask, heartbeat, nextTask, reportStatus } from './engin
 /**
  * The make engine's links for a computer's browser (the Romva Apply extension):
  *
- *   GET  /api/maker/next?worker=…              the next task (null: none now)
+ *   GET  /api/maker/next?worker=…              { task, notice? } the next task (null: none now;
+ *                                              notice: why the engine stopped this computer)
  *   POST /api/maker/tasks/:id/answer           { worker, answer }
  *   POST /api/maker/tasks/:id/failed           { worker, reason, unavailable }
  *   POST /api/maker/tasks/:id/heartbeat        { worker }  (a long answer: keep the application held)
@@ -33,7 +34,8 @@ const Params = z.object({ id: z.string().uuid() });
 makerRouter.get('/next', validate({ query: z.object({ worker: Worker }) }), async (req, res) => {
   const actor = currentActor(req);
   const { worker } = (req as ValidatedRequest<unknown, unknown, { worker: string }>).valid.query;
-  res.json({ task: await nextTask(actor, worker) });
+  // { task, notice? }: notice — why the engine stopped this computer (a Profile without its prompts).
+  res.json(await nextTask(actor, worker));
 });
 
 const AnswerSchema = z.object({ worker: Worker, answer: z.string().min(1).max(500_000) });

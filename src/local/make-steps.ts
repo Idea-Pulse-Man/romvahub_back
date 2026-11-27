@@ -8,7 +8,7 @@ import { convertDocxToPdf } from '../resume/maker/maker.service.js';
 import { readTemplateBytes } from '../resume/maker/templates.js';
 import { AiResumeSchema } from '../resume/resume.schemas.js';
 import { CoverLetterPayloadSchema, type CoverLetterPayload } from '../cover-letter/cover-letter.schemas.js';
-import { settingsForMake } from '../profiles/profile-prompts.service.js';
+import { settingsForMake, type MakeMethod, type MakePrompts } from '../profiles/profile-prompts.service.js';
 import mammoth from 'mammoth';
 import { prisma } from '../prisma.js';
 import { parseJsonAnswer } from './json-answer.js';
@@ -52,7 +52,7 @@ export interface MakeJob {
   ownerUserId: string;
   /** The posting as Markdown — what ChatGPT reads and the .txt file holds. */
   jobDescription: string;
-  prompts: Awaited<ReturnType<typeof settingsForMake>>;
+  prompts: MakePrompts;
   profile: Awaited<ReturnType<typeof profileService.getProfile>>;
   /** `Jonathan_Bai_Latent_AI` — the start of every file name. */
   stem: string;
@@ -60,14 +60,45 @@ export interface MakeJob {
   profileFolderName: string;
   /** The application's folder inside it, e.g. `Latent_Ai_Ai_Engineer`. */
   folderName: string;
-  /** The first chat's message: the Profile's Resume prompt and the posting. */
+  /**
+   * The Resume's request: the Profile's Resume prompt and the posting — in two
+   * steps, Step 2's prompt, the posting and Step 1's answer (when given).
+   */
   resumeMessage: string;
+  /** Two steps: Step 1's request (its prompt and the posting). Null for one step. */
+  step1Message: string | null;
 }
 
 export { applicationFolderName, fileStem } from '../resume/store/names.js';
 
-/** Everything the two chats need, read from the application, its Profile and the Profile's prompts. */
-export async function prepareMake(actor: Actor, bidId: string): Promise<MakeJob> {
+const RULE = '================================================================================';
+
+/** A request: the prompt, the posting under INPUT, and anything more (Step 1's answer) under its own heading. */
+function request(prompt: string, input: string, more: { heading: string; text: string } | null): string {
+  return [
+    prompt,
+    '',
+    RULE,
+    'INPUT',
+    RULE,
+    input,
+    ...(more ? ['', RULE, more.heading, RULE, more.text] : []),
+    '',
+    'Reply with the JSON only, in a single ```json code block.',
+  ].join('\n');
+}
+
+/**
+ * Everything the chats need, read from the application, its Profile and the
+ * Profile's prompts. `method`: one step (the Resume prompt) or two (Step 1's
+ * and Step 2's prompts) — the Profile must have that method's prompts.
+ * `stepOne`: two steps, Step 1's answer, which Step 2's request carries.
+ */
+export async function prepareMake(
+  actor: Actor,
+  bidId: string,
+  { method = 'one', stepOne = null }: { method?: MakeMethod; stepOne?: string | null } = {},
+): Promise<MakeJob> {
   const bid = await bidsService.getBid(actor, bidId);
   if (bid.status === 'Skip') {
     throw new BadRequestError('This application is marked Skip, so no Resume or cover letter is made for it.');
@@ -82,10 +113,10 @@ export async function prepareMake(actor: Actor, bidId: string): Promise<MakeJob>
   const profile = bid.candidate?.profileId
     ? await profileService.getProfileById(bid.candidate.profileId)
     : await profileService.getProfile(ownerUserId);
-  // The Profile's own Resume prompt and template (Profiles → Prompts &
-  // Template) are required: no ChatGPT call for a Profile missing either. The
-  // cover letter prompt falls back to the simple one.
-  const prompts = await settingsForMake({ profileId: bid.candidate?.profileId, ownerUserId });
+  // The Profile's own Resume prompts (of the method) and template (Profiles →
+  // Prompts & Template) are required: no AI is asked for a Profile missing
+  // any. The cover letter prompt falls back to the simple one.
+  const prompts = await settingsForMake({ profileId: bid.candidate?.profileId, ownerUserId, method });
 
   const firstName = profile.firstName || bid.candidate?.firstName || '';
   const lastName = profile.lastName || bid.candidate?.lastName || '';
@@ -95,16 +126,13 @@ export async function prepareMake(actor: Actor, bidId: string): Promise<MakeJob>
     null,
     2,
   );
-  const resumeMessage = [
-    prompts.resumePrompt,
-    '',
-    '================================================================================',
-    'INPUT',
-    '================================================================================',
-    input,
-    '',
-    'Reply with the JSON only, in a single ```json code block.',
-  ].join('\n');
+  // Two steps: Step 2's request carries Step 1's answer — the information for this Resume.
+  const stepOneAnswer =
+    method === 'two' && stepOne
+      ? { heading: 'STEP 1 ANSWER — THE INFORMATION FOR THIS RESUME', text: ['```json', stepOne, '```'].join('\n') }
+      : null;
+  const resumeMessage = request(prompts.resumePrompt, input, stepOneAnswer);
+  const step1Message = prompts.step1Prompt ? request(prompts.step1Prompt, input, null) : null;
 
   return {
     bid,
@@ -117,6 +145,7 @@ export async function prepareMake(actor: Actor, bidId: string): Promise<MakeJob>
     profileFolderName: fileStem(firstName, lastName) || 'Profile',
     folderName: applicationFolderName(bid.company, bid.role),
     resumeMessage,
+    step1Message,
   };
 }
 
@@ -143,7 +172,8 @@ function problemsIn(job: MakeJob, json: object, { allBullets = false } = {}): Pr
     templateId: job.prompts.templateId,
     name: profileName(job) || undefined,
     fallbackCompanies: job.profile.workExperience.map((entry) => entry.company),
-    ...(allBullets ? { requestedBullets: bulletsNamedIn(job.resumeMessage) } : {}),
+    // The bullet tags the prompt that writes the Resume names (not Step 1's answer, which it carries).
+    ...(allBullets ? { requestedBullets: bulletsNamedIn(job.prompts.resumePrompt) } : {}),
   });
 }
 
@@ -169,7 +199,11 @@ export async function checkResumeAnswer(job: MakeJob, answer: string): Promise<R
     return { problems, retryMessage: resumeRetryMessage(job.resumeMessage, problems, null) };
   }
   const problems = await problemsIn(job, json as object, { allBullets: true });
-  return problems.length ? { problems, retryMessage: resumeRetryMessage(job.resumeMessage, problems, json) } : { problems };
+  if (!problems.length) return { problems };
+  // A Resume that only lacks some bullets goes back to be completed; anything else (no summary, a
+  // refusal in JSON…) is asked for whole again, without it.
+  const buildable = (await problemsIn(job, json as object)).length === 0;
+  return { problems, retryMessage: resumeRetryMessage(job.resumeMessage, problems, buildable ? json : null) };
 }
 
 /** ChatGPT's first answer → the Resume in the Profile's Word template, as Word and PDF, stored on the application. */

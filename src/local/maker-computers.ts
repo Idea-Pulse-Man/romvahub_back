@@ -7,7 +7,7 @@ import { ForbiddenError } from '../http/errors.js';
 import { validate, type ValidatedRequest } from '../http/validate.js';
 import { logger } from '../logger.js';
 import { prisma } from '../prisma.js';
-import { assertProfileAccess } from '../profiles/profile-prompts.service.js';
+import { assertProfileAccess, assertReadyToMake } from '../profiles/profile-prompts.service.js';
 import type { ComputerChoice } from './auto-make-queue.js';
 import { setSwitches } from './auto-make-state.js';
 
@@ -26,19 +26,17 @@ import { setSwitches } from './auto-make-state.js';
 export const makerComputersRouter: Router = Router();
 makerComputersRouter.use(requireAuth);
 
+const Site = z.enum(['chatgpt', 'deepseek', 'claude', 'gemini']);
+const Settings = z.record(z.string(), z.union([z.string(), z.boolean()]));
 const ChoicesSchema = z.object({
+  // One step (the Resume prompt), or two: Step 1 (draftAi: the information the Resume needs) → Step 2 (ai: the Resume).
   method: z.enum(['one', 'two']),
-  ai: z.enum(['chatgpt', 'deepseek', 'claude', 'gemini']),
-  draftAi: z.literal('deepseek').optional(),
-  letterAi: z.enum(['chatgpt', 'deepseek', 'claude', 'gemini']),
-  models: z.record(z.string(), z.record(z.string(), z.union([z.string(), z.boolean()]))).optional(),
-  // The Start window's two lines: the Resume's and the cover letter's own settings for their AI.
-  parts: z
-    .object({
-      resume: z.record(z.string(), z.union([z.string(), z.boolean()])).optional(),
-      letter: z.record(z.string(), z.union([z.string(), z.boolean()])).optional(),
-    })
-    .optional(),
+  ai: Site,
+  draftAi: Site.optional(),
+  letterAi: Site,
+  models: z.record(z.string(), Settings).optional(),
+  // The Start window's lines: Step 1's (two steps), the Resume's and the cover letter's own settings for their AI.
+  parts: z.object({ draft: Settings.optional(), resume: Settings.optional(), letter: Settings.optional() }).optional(),
 });
 
 const ComputerSchema = z.object({
@@ -105,6 +103,12 @@ makerComputersRouter.put(
         );
       }
     }
+    // The Profile must have the Resume prompts of the method chosen (two steps: Step 1's and Step 2's) and its
+    // template: refused here, with what is missing, rather than each application failing for it.
+    if (body.running && profileId) {
+      const method = body.choices?.method ?? ((await savedMethod(worker)) || 'one');
+      await assertReadyToMake(profileId, method);
+    }
     // A start No. counts in one Profile's numbers only: dropped when another Profile was sent.
     const keepsStart = profileId !== null && (body.profileId == null || body.profileId === profileId);
     const data = {
@@ -115,6 +119,8 @@ makerComputersRouter.put(
       startFrom: keepsStart ? (body.startFrom ?? null) : null,
       ...(body.choices ? { choices: body.choices as PrismaTypes.InputJsonValue } : {}),
       ...(body.running && !existing?.running ? { startedAt: new Date() } : {}),
+      // Started or stopped here: an old note (why it waited, why the engine stopped it) goes.
+      status: PrismaTypes.DbNull,
     };
     const row = await prisma.makerComputer.upsert({ where: { worker }, create: { worker, ...data }, update: data });
     logger.info({ worker, running: row.running, profileId: row.profileId, order: row.order, startFrom: row.startFrom }, 'Resume maker: computer set');
@@ -129,6 +135,13 @@ makerComputersRouter.post('/stop-all', requireAdmin, async (req, res) => {
   logger.info({ stopped: count, by: currentActor(req).id }, 'Resume maker: Stop all');
   res.json({ stopped: count });
 });
+
+/** The method this computer was last started with ('' when never). */
+export async function savedMethod(worker: string): Promise<'one' | 'two' | ''> {
+  const row = await prisma.makerComputer.findUnique({ where: { worker }, select: { choices: true } });
+  const method = (row?.choices as { method?: unknown } | null)?.method;
+  return method === 'two' || method === 'one' ? method : row ? 'one' : '';
+}
 
 /**
  * The computer's choices, for a worker asking for work — null when it was

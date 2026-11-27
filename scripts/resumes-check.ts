@@ -28,7 +28,7 @@ import path from 'node:path';
 import { Prisma as PrismaTypes } from '../src/generated/prisma/client.js';
 import { prisma } from '../src/prisma.js';
 import { CoverLetterPayloadSchema } from '../src/cover-letter/cover-letter.schemas.js';
-import { folderUsage, keptFormats, listCopies, resumeFolder } from '../src/resume/store/folder.js';
+import { folderUsage, hasCopy, keptFormats, resumeFolder } from '../src/resume/store/folder.js';
 import { keepsCopies } from '../src/resume/store/file-rules.js';
 import { letterKey, makeCopies, parseBuild, resumeKey } from '../src/resume/store/resume-store.js';
 import { templateVersion } from '../src/resume/store/template-versions.js';
@@ -80,8 +80,6 @@ async function main(): Promise<void> {
       await prisma.bid.findMany({ where: { ...where, resumeDocument: { not: PrismaTypes.AnyNull } }, select: { id: true } })
     ).map((row) => row.id),
   );
-  const copies = await listCopies();
-  const hasCopy = (bidId: string, dir: string) => (copies.get(bidId) ?? []).some((copy) => path.basename(copy.dir) === dir);
 
   const count = {
     json: 0,
@@ -117,7 +115,7 @@ async function main(): Promise<void> {
         if (!(await templateThere(build.templateSha256, build.templateId))) {
           problems.push({ number: row.number, company: row.company, what: `template "${build.templateId}" is missing: cannot be made` });
         }
-        if (hasCopy(row.id, `resume-${resumeKey(row.resumeAnswer, build)}`)) count.jsonInFolder += 1;
+        if (await hasCopy(row.id, 'resume', resumeKey(row.resumeAnswer, build))) count.jsonInFolder += 1;
         else {
           count.jsonMissing += 1;
           if (keeps) {
@@ -145,7 +143,7 @@ async function main(): Promise<void> {
     if (letter.success) {
       count.letters += 1;
       const key = letterKey(letter.data, row.bidDate.toISOString().slice(0, 10), row.profileId);
-      if (hasCopy(row.id, `cover-letter-${key}`)) count.lettersInFolder += 1;
+      if (await hasCopy(row.id, 'cover-letter', key)) count.lettersInFolder += 1;
       else if (keeps) toMake.add(row.id);
     }
   }

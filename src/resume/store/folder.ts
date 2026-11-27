@@ -188,6 +188,53 @@ export async function writeCopy(bidId: string, kind: DocKind, key: string, forma
   await dropOtherKeys(root, bidId, kind, key);
 }
 
+/** A key from before keys were made from the JSON with its keys sorted (`canonicalJson`). */
+const LEGACY_KEY = /^[0-9a-f]{12}$/;
+
+/** The one legacy copy folder of this kind, when it is the application's only one of that kind. */
+async function legacyCopyDir(root: string, bidId: string, kind: DocKind, key: string): Promise<string | null> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(applicationDir(root, bidId));
+  } catch {
+    return null;
+  }
+  const prefix = `${kind}-`;
+  const mine = entries.filter((entry) => entry.startsWith(prefix));
+  if (mine.length !== 1 || mine[0] === `${prefix}${key}` || !LEGACY_KEY.test(mine[0]!.slice(prefix.length))) return null;
+  return path.join(applicationDir(root, bidId), mine[0]!);
+}
+
+/**
+ * Copies saved before keys were made from the JSON with its keys sorted sit
+ * under a key the JSON read back from the database no longer gives. Every
+ * save removes an application's other copies of the same kind, so its one
+ * such copy is its latest: it is taken over under the new key (renamed),
+ * rather than made again — they are the very files that were made or sent.
+ */
+export async function adoptLegacyCopy(bidId: string, kind: DocKind, key: string): Promise<boolean> {
+  const root = await resumeFolder();
+  const legacy = await legacyCopyDir(root, bidId, kind, key);
+  if (!legacy) return false;
+  try {
+    await fs.rename(legacy, copyDir(root, bidId, kind, key));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether the copy is in the folder: under its key, or as the legacy copy `adoptLegacyCopy` takes over. */
+export async function hasCopy(bidId: string, kind: DocKind, key: string): Promise<boolean> {
+  const root = await resumeFolder();
+  try {
+    await fs.access(copyDir(root, bidId, kind, key));
+    return true;
+  } catch {
+    return (await legacyCopyDir(root, bidId, kind, key)) !== null;
+  }
+}
+
 async function dropOtherKeys(root: string, bidId: string, kind: DocKind, key: string): Promise<void> {
   let entries: string[];
   try {

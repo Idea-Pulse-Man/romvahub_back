@@ -30,6 +30,13 @@ const ChoicesSchema = z.object({
   draftAi: z.literal('deepseek').optional(),
   letterAi: z.enum(['chatgpt', 'deepseek', 'claude', 'gemini']),
   models: z.record(z.string(), z.record(z.string(), z.union([z.string(), z.boolean()]))).optional(),
+  // The Start window's two lines: the Resume's and the cover letter's own settings for their AI.
+  parts: z
+    .object({
+      resume: z.record(z.string(), z.union([z.string(), z.boolean()])).optional(),
+      letter: z.record(z.string(), z.union([z.string(), z.boolean()])).optional(),
+    })
+    .optional(),
 });
 
 const ComputerSchema = z.object({

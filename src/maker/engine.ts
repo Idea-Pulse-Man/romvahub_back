@@ -49,7 +49,10 @@ export interface Choices {
   method: 'one' | 'two';
   ai: Site;
   letterAi: Site;
+  /** Each AI's settings (the draft's DeepSeek; older Start windows kept one set per AI). */
   models: Record<string, Record<string, string | boolean>>;
+  /** The Resume's and the cover letter's own settings for their AI: these win over `models`. */
+  parts?: { resume?: Record<string, string | boolean>; letter?: Record<string, string | boolean> };
 }
 
 /** The default (the user's choice, 2026-11-26): one step, ChatGPT · Chat · GPT-6 · High, the letter the same. */
@@ -94,7 +97,14 @@ async function choicesFor(worker: string): Promise<Choices> {
     ai: site(saved.ai, DEFAULT_CHOICES.ai),
     letterAi: site(saved.letterAi, site(saved.ai, DEFAULT_CHOICES.letterAi)),
     models: { ...DEFAULT_CHOICES.models, ...(saved.models ?? {}) },
+    ...(saved.parts && typeof saved.parts === 'object' ? { parts: saved.parts } : {}),
   };
+}
+
+/** The settings a step asks its AI with: the part's own (Resume / cover letter), else that AI's. */
+function settingsFor(choices: Choices, step: Step, site: Site): Record<string, string | boolean> {
+  const own = step === 'resume' ? choices.parts?.resume : step === 'letter' ? choices.parts?.letter : undefined;
+  return { ...(choices.models[site] ?? {}), ...(own ?? {}) };
 }
 
 async function toBrowser(task: {
@@ -145,7 +155,7 @@ async function addTask(
         // Web search for the Resume (ChatGPT turns it on in the chat); every chat is a temporary one.
         webSearch: step === 'resume',
         temporary: true,
-        choice: choices.models[site] ?? {},
+        choice: settingsFor(choices, step, site),
       } as PrismaTypes.InputJsonValue,
     },
   });

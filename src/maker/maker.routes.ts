@@ -8,7 +8,7 @@ import { answerTask, failTask, heartbeat, nextTask, reportStatus } from './engin
 /**
  * The make engine's links for a computer's browser (the Romva Apply extension):
  *
- *   GET  /api/maker/next?worker=…              the next task, waiting up to ~20 s for one (null: none)
+ *   GET  /api/maker/next?worker=…              the next task (null: none now)
  *   POST /api/maker/tasks/:id/answer           { worker, answer }
  *   POST /api/maker/tasks/:id/failed           { worker, reason, unavailable }
  *   POST /api/maker/tasks/:id/heartbeat        { worker }  (a long answer: keep the application held)
@@ -23,26 +23,17 @@ makerRouter.use(requireAuth);
 
 const Worker = z.string().min(1).max(200);
 const Params = z.object({ id: z.string().uuid() });
-const NEXT_WAIT_MS = 20_000;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * Answered at once: the browser asks again every 30 seconds while idle (an
+ * alarm), right after each answer, and at once when Run is clicked on the
+ * website — so the database is not asked over and over while nothing happens
+ * (Supabase counts every byte sent out).
+ */
 makerRouter.get('/next', validate({ query: z.object({ worker: Worker }) }), async (req, res) => {
   const actor = currentActor(req);
   const { worker } = (req as ValidatedRequest<unknown, unknown, { worker: string }>).valid.query;
-  const until = Date.now() + NEXT_WAIT_MS;
-  let closed = false;
-  req.on('close', () => {
-    closed = true;
-  });
-  // Asked again every few seconds until something comes up, so a Start or a "Make" is picked up at once.
-  for (;;) {
-    const task = await nextTask(actor, worker);
-    if (task || closed || Date.now() >= until) {
-      res.json({ task });
-      return;
-    }
-    await sleep(4_000);
-  }
+  res.json({ task: await nextTask(actor, worker) });
 });
 
 const AnswerSchema = z.object({ worker: Worker, answer: z.string().min(1).max(500_000) });

@@ -25,6 +25,7 @@
     "files:to-db": "tsx scripts/move-files-to-db.ts",
     "resumes:to-json": "tsx scripts/resumes-to-json.ts",
     "resumes:check": "tsx scripts/resumes-check.ts",
+    "resumes:fix-bold": "tsx scripts/resumes-fix-bold.ts",
     "backup:changes": "tsx scripts/backup-changes.ts",
     "backup:restore": "tsx scripts/restore-backup.ts"
   },

@@ -25,6 +25,15 @@ const ANY_SKILLS_VALUE_TOKEN = /<\s*Skills(?:-\d+)?\s*>/gi;
  */
 const HIGHLIGHT_REGEX = /\[(.*?)\]\[highlight\]|\*\*([^*\n]+?)\*\*/gs;
 
+/**
+ * A bold span's text without bold markup nested inside it: an AI sometimes
+ * writes both forms at once (`**[text][highlight]**`, `[**text**][highlight]`),
+ * which printed the inner brackets or stars in the Resume.
+ */
+export function plainBold(text: string): string {
+  return text.replace(/\[(.*?)\]\[highlight\]/gs, '$1').replace(/\*\*/g, '');
+}
+
 type FormattedTextSegment = { text: string; isHighlighted: boolean };
 
 function localName(node: Node): string {
@@ -182,7 +191,7 @@ function parseFormattedSegments(text: string): FormattedTextSegment[] {
       });
     }
     segments.push({
-      text: match[1] ?? match[2] ?? '',
+      text: plainBold(match[1] ?? match[2] ?? ''),
       isHighlighted: true,
     });
     lastIndex = match.index + match[0].length;
